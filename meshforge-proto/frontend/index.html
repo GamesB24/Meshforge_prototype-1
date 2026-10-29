@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeshForge · Image to 3D</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/"}}</script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">◆ MeshForge</span>
+  <nav class="menus"><span>File</span><span>Edit</span><span>View</span><span>Help</span></nav>
+  <div class="tabs"><span class="tab on">Generate</span><span class="tab dim" title="Planned">Parts</span><span class="tab dim" title="Planned">Retopo</span><span class="tab dim" title="Planned">Script</span></div>
+  <span class="grow"></span>
+  <span id="device" class="chip">…</span>
+</header>
+
+<div class="workspace">
+  <!-- Left tool shelf -->
+  <aside class="shelf">
+    <button class="tool on" data-tool="orbit" title="Orbit (MMB drag)">⟲</button>
+    <button class="tool" data-tool="pan" title="Pan (Shift + MMB)">✥</button>
+    <button class="tool" data-tool="zoom" title="Zoom (scroll)">⌕</button>
+    <hr>
+    <button class="tool" id="frame" title="Frame selected (Numpad .)">⛶</button>
+    <button class="tool" id="upload2" title="Import image">⇪</button>
+  </aside>
+
+  <!-- Viewport -->
+  <section class="viewport">
+    <div class="vheader">
+      <select id="mode" class="dd"><option>Object Mode</option></select>
+      <span class="sep"></span>
+      <button class="ib on" data-view="persp" id="perspBtn" title="Perspective / Ortho (Numpad 5)">Persp</button>
+      <span class="grow"></span>
+      <label class="ib"><input type="checkbox" id="ovWire"> Wireframe overlay</label>
+      <label class="ib"><input type="checkbox" id="ovGrid" checked> Grid</label>
+      <div class="shading" id="shading">
+        <button data-v="wire" title="Wireframe (Z)">◇</button><button data-v="solid" class="on" title="Solid">●</button><button data-v="matcap" title="Matcap">◐</button><button data-v="color" title="Vertex colour">◉</button>
+      </div>
+    </div>
+    <canvas id="c"></canvas>
+    <canvas id="gizmo" width="96" height="96" title="Click an axis to snap the view"></canvas>
+    <div class="vinfo" id="vinfo">User Perspective<br><small>No object</small></div>
+    <label id="drop" class="drop">
+      <input id="file" type="file" accept="image/*" hidden>
+      <span>Drop a reference image anywhere in the viewport<br><small>or click to browse · single object, plain background works best</small></span>
+    </label>
+    <div class="keys">MMB orbit · Shift+MMB pan · Wheel zoom · Numpad 1/3/7 views (Ctrl = opposite) · 5 ortho · . frame · Z wireframe</div>
+  </section>
+
+  <!-- Properties panel -->
+  <aside class="props">
+    <details open><summary>Input</summary>
+      <img id="preview" alt="" hidden>
+      <div class="row"><span>Image</span><b id="fname">none</b></div>
+      <label class="row chk"><input id="rembg" type="checkbox" checked> Remove background</label>
+    </details>
+    <details open><summary>Generator</summary>
+      <div class="row"><span>Engine</span><select id="engine"></select></div>
+      <div class="row"><span>Run on</span><div class="seg" id="runner"><button data-v="local" class="on">Local GPU</button><button data-v="cloud">Cloud GPU</button></div></div>
+      <div id="runnerHint" class="hint"></div>
+      <div class="row"><span>Resolution</span><input id="res" type="range" min="128" max="384" step="32" value="256"><b id="resV">256</b></div>
+    </details>
+    <details open><summary>Topology</summary>
+      <div class="row"><span>Remesh</span><select id="remesh"><option value="decimate">Triangles (decimate)</option><option value="quad">Quads (Instant Meshes)</option><option value="none">Keep raw</option></select></div>
+      <div class="row"><span>Target faces</span><input id="tf" type="range" min="500" max="50000" step="500" value="8000"><b id="tfV">8k</b></div>
+      <div class="row"><span>Sharp angle</span><input id="sa" type="range" min="10" max="90" step="5" value="40"><b id="saV">40°</b></div>
+      <div class="row"><span>Smoothing</span><input id="sm" type="range" min="0" max="1" step="0.05" value="0.3"><b id="smV">0.30</b></div>
+      <label class="row chk"><input id="split" type="checkbox"> Split loose pieces into objects</label>
+    </details>
+    <button id="go" class="primary" disabled>Generate 3D</button>
+    <details open><summary>Export</summary>
+      <div class="row"><a id="dlGlb" class="btn disabled" download>GLB</a><a id="dlObj" class="btn disabled" download>OBJ (quads)</a></div>
+    </details>
+    <details open><summary>History</summary><ul id="history"></ul></details>
+  </aside>
+</div>
+
+<footer class="statusbar">
+  <div class="timeline"><div class="bar"><i id="barFill"></i></div></div>
+  <span id="progMsg">Ready</span>
+  <span class="grow"></span>
+  <span id="stats"></span>
+</footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>
