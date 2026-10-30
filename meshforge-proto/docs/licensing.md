@@ -31,3 +31,5 @@ The interface borrows only *layout and interaction conventions* common to 3D too
 An add-on runs inside Blender and imports `bpy`; the Blender Foundation treats add-ons as GPL-covered, so the **add-on's Python code must be GPL-compatible (in practice GPL-3.0-or-later)** when distributed. A clean way to do both:
 - Keep the MeshForge server (engines, runners, post-processing) as a separate program under your own licence.
 - Ship a thin GPL add-on that only talks to that server over HTTP (upload image, poll job, import the GLB). Communicating over a network/API with a separate program generally does not make that program GPL - get legal advice before relying on this for a commercial product.
+
+v3 adds these unmodified three.js r170 example modules (MIT, same licence as three.js) under `frontend/vendor/`: TransformControls.js, GLTFExporter.js, OBJExporter.js, STLExporter.js, PLYExporter.js. `frontend/editor.js` is original MeshForge code (MIT); no code from other 3D applications is used.

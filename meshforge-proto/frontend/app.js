@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/GLTFLoader.js';
+import { createEditor } from './editor.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -17,8 +18,9 @@ let camera = persp; persp.position.set(2.2, 1.4, 2.6);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 // MMB orbit, Shift+MMB pan (OrbitControls switches rotate->pan while Shift is held), wheel zoom.
-const setLeft = (t) => controls.mouseButtons = { LEFT: { orbit: THREE.MOUSE.ROTATE, pan: THREE.MOUSE.PAN, zoom: THREE.MOUSE.DOLLY }[t], MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
-setLeft('orbit');
+// Select/Move/Rotate/Scale tools keep LMB for picking and the gizmo; the navigation tools put orbit/pan/zoom on LMB.
+const setLeft = (t) => controls.mouseButtons = { LEFT: { orbit: THREE.MOUSE.ROTATE, pan: THREE.MOUSE.PAN, zoom: THREE.MOUSE.DOLLY }[t] ?? null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+setLeft('select');
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x444450, 1.4));
 const key = new THREE.DirectionalLight(0xffffff, 2.0); key.position.set(3, 5, 4); scene.add(key);
@@ -28,6 +30,7 @@ const axX = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.V
 const axZ = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.001, -5), new THREE.Vector3(0, 0.001, 5)]), new THREE.LineBasicMaterial({ color: 0x6a9c3a }));
 scene.add(axX, axZ);
 let model = null;
+let editor = null; // created below, once the scene exists
 
 // Procedural matcap (original, generated at runtime - no third-party matcap images).
 function makeMatcap() {
@@ -43,6 +46,9 @@ const MAT = {
   wire: new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true }),
   overlay: new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.25, depthTest: true, polygonOffset: true }),
 };
+// push shaded surfaces back slightly so Edit Mode edges/points draw cleanly on top
+const offsetMat = (m) => { if (m && !m.wireframe) { m.polygonOffset = true; m.polygonOffsetFactor = 1; m.polygonOffsetUnits = 1; } };
+[MAT.solid, MAT.matcap].forEach(offsetMat);
 
 function resize() {
   const w = vp.clientWidth, h = vp.clientHeight;
@@ -106,11 +112,13 @@ let viewLabel = 'User Perspective';
 function updateInfo() {
   let tris = 0; model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay) tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3; });
   const objs = model ? model.children.filter((o) => o.isMesh || o.children.length).length || 1 : 0;
-  $('vinfo').innerHTML = `${viewLabel}<br><small>${model ? `(${objs}) object${objs > 1 ? 's' : ''} · ${Math.round(tris).toLocaleString()} tris` : 'No object'}</small>`;
+  const extra = editor?.infoLine(); $('vinfo').innerHTML = `${viewLabel}<br><small>${model ? `(${objs}) object${objs > 1 ? 's' : ''} · ${Math.round(tris).toLocaleString()} tris` : 'No object'}</small>${extra ? `<br><small class="sel">${extra}</small>` : ''}`;
 }
 
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (editor.handleKey(e)) return;
+  if (e.ctrlKey || e.metaKey) return;
   const opp = e.ctrlKey ? -1 : 1;
   const map = { Numpad1: ['Z', 0, 0, 1], Numpad3: ['X', 1, 0, 0], Numpad7: ['Y', 0, 1, 0] };
   const k = map[e.code] || map[{ Digit1: 'Numpad1', Digit3: 'Numpad3', Digit7: 'Numpad7' }[e.code]];
@@ -127,8 +135,8 @@ function applyShading() {
     if (!o.isMesh || o.userData.isOverlay) return;
     o.userData.orig ??= o.material;
     o.material = state.shading === 'color' ? o.userData.orig : MAT[state.shading];
-    let ov = o.children.find((c) => c.userData.isOverlay);
-    if (!ov) { ov = new THREE.Mesh(o.geometry, MAT.overlay); ov.userData.isOverlay = true; o.add(ov); }
+    let ov = o.children.find((c) => c.userData.isWireOverlay);
+    if (!ov) { ov = new THREE.Mesh(o.geometry, MAT.overlay); ov.userData.isOverlay = ov.userData.isWireOverlay = true; ov.raycast = () => {}; o.add(ov); }
     ov.visible = state.wireOverlay && state.shading !== 'wire';
   });
 }
@@ -137,18 +145,26 @@ document.querySelectorAll('#shading button').forEach((b) => b.onclick = () => se
 $('ovWire').onchange = (e) => { state.wireOverlay = e.target.checked; applyShading(); };
 $('ovGrid').onchange = (e) => { grid.visible = axX.visible = axZ.visible = e.target.checked; };
 $('perspBtn').onclick = toggleOrtho; $('frame').onclick = frameModel;
-document.querySelectorAll('.tool[data-tool]').forEach((b) => b.onclick = () => { document.querySelectorAll('.tool[data-tool]').forEach((x) => x.classList.toggle('on', x === b)); setLeft(b.dataset.tool); });
+function setTool(t) { document.querySelectorAll('.tool[data-tool]').forEach((x) => x.classList.toggle('on', x.dataset.tool === t)); setLeft(t); editor.setTool(t); }
+document.querySelectorAll('.tool[data-tool]').forEach((b) => b.onclick = () => setTool(b.dataset.tool));
 
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); drawGizmo(); });
+editor = createEditor({
+  scene, controls, canvas, renderer, camera: () => camera, getModel: () => model, jobId: () => state.current, updateInfo: () => updateInfo(),
+  status: (m) => { $('progMsg').textContent = m; },
+  setModeUI: (m) => { $('mode').value = m; $('selModes').hidden = m !== 'edit'; },
+  setSelModeUI: (m) => document.querySelectorAll('#selModes button').forEach((b) => b.classList.toggle('on', b.dataset.v === m)),
+});
+renderer.setAnimationLoop(() => { editor.tick(); controls.update(); renderer.render(scene, camera); drawGizmo(); });
 
 function loadGLB(url) {
   new GLTFLoader().load(url, (g) => {
+    editor.reset();
     if (model) scene.remove(model);
     model = g.scene;
-    model.traverse((o) => { if (o.isMesh && o.material) { o.material.side = THREE.DoubleSide; o.material.vertexColors = !!o.geometry.attributes.color; if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); } });
+    model.traverse((o) => { if (o.isMesh && o.material) { offsetMat(o.material); o.material.side = THREE.DoubleSide; o.material.vertexColors = !!o.geometry.attributes.color; if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); } });
     const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
     const s = 1.4 / Math.max(size.x, size.y, size.z);
-    model.scale.setScalar(s); model.position.set(-c.x * s, -box.min.y * s, -c.z * s);
+    model.scale.setScalar(s); model.position.set(-c.x * s, -box.min.y * s, -c.z * s); model.updateMatrix(); model.userData.norm = model.matrix.clone();
     scene.add(model); applyShading(); frameModel(); updateInfo();
     $('drop').classList.add('hidden');
   });
@@ -211,8 +227,11 @@ async function track(id) {
 }
 function show(j) {
   state.current = j.id; loadGLB(`/api/jobs/${j.id}/mesh.glb?t=${j.created}`);
-  $('dlGlb').href = `/api/jobs/${j.id}/mesh.glb`; $('dlObj').href = `/api/jobs/${j.id}/mesh.obj`;
-  $('dlGlb').classList.remove('disabled'); $('dlObj').classList.remove('disabled');
+  $('srvGlb').href = `/api/jobs/${j.id}/mesh.glb`; $('srvObj').href = `/api/jobs/${j.id}/mesh.obj`;
+  $('srvGlb').classList.remove('disabled'); $('srvObj').classList.remove('disabled');
+  $('rawGlb').href = `/api/jobs/${j.id}/raw.glb`; $('rawGlb').classList.toggle('disabled', !j.stats?.raw);
+  $('rawGlb').title = j.stats?.raw ? 'Unprocessed TripoSR output' : 'Not kept for this job (generated before v3)';
+  document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   const s = j.stats;
   $('stats').textContent = `${s.quads ? fmtK(s.quads) + ' quads' : fmtK(s.faces) + ' tris'} · ${s.sharp_edges ?? 0} hard edges · ${s.parts.length} object(s) · ${j.seconds}s · ${j.runner}`;
   document.querySelectorAll('#history li').forEach((li) => li.classList.toggle('sel', li.dataset.id === j.id));
@@ -232,4 +251,18 @@ async function refreshHistory() {
 loadConfig(); refreshHistory().then(async () => {  // reopen the latest result
   const list = await (await fetch('/api/jobs')).json(); const j = list.find((x) => x.status === 'done'); if (j) show(j);
 });
-window.__meshforge = { loadGLB, show };
+// ---------- export buttons + menus ----------
+document.querySelectorAll('[data-export]').forEach((b) => b.onclick = () => b.dataset.export === 'zip' ? editor.exportZip() : editor.exportAs(b.dataset.export));
+$('mode').onchange = (e) => editor.setMode(e.target.value);
+document.querySelectorAll('#selModes button').forEach((b) => b.onclick = () => editor.setSelMode(b.dataset.v));
+const ACTIONS = {
+  import: () => $('file').click(), glb: () => editor.exportAs('glb'), obj: () => editor.exportAs('obj'), stl: () => editor.exportAs('stl'), ply: () => editor.exportAs('ply'),
+  zip: () => editor.exportZip(), raw: () => $('rawGlb').click(), srvglb: () => $('srvGlb').click(), srvobj: () => $('srvObj').click(),
+  undo: () => editor.undo(), redo: () => editor.redo(), selall: () => editor.selectAll(), edit: () => editor.setMode(editor.mode === 'edit' ? 'object' : 'edit'),
+  move: () => setTool('move'), rotate: () => setTool('rotate'), scale: () => setTool('scale'),
+  frame: frameModel, ortho: toggleOrtho, front: () => snapView(new THREE.Vector3(0, 0, 1), 'Z'), right: () => snapView(new THREE.Vector3(1, 0, 0), 'X'), top: () => snapView(new THREE.Vector3(0, 1, 0), 'Y'),
+  keys: () => { $('help').hidden = !$('help').hidden; },
+};
+document.querySelectorAll('.menu [data-act]').forEach((b) => b.onclick = () => { document.activeElement?.blur(); ACTIONS[b.dataset.act](); });
+$('help').onclick = () => { $('help').hidden = true; };
+window.__meshforge = { loadGLB, show, editor, get model() { return model; }, get camera() { return camera; }, controls, setTool };

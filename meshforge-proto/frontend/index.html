@@ -9,7 +9,23 @@
 <body>
 <header class="topbar">
   <span class="brand">◆ MeshForge</span>
-  <nav class="menus"><span>File</span><span>Edit</span><span>View</span><span>Help</span></nav>
+  <nav class="menus">
+    <div class="menu" tabindex="0"><span>File</span><div class="drop-menu">
+      <button data-act="import">Import image…</button><hr>
+      <button data-act="glb">Export GLB (.glb)</button><button data-act="obj">Export OBJ (.obj)</button>
+      <button data-act="stl">Export STL (.stl)</button><button data-act="ply">Export PLY (.ply)</button><hr>
+      <button data-act="zip">Download model (.zip: mesh + preview)</button><hr>
+      <button data-act="srvglb">Download processed GLB (unedited)</button><button data-act="srvobj">Download processed OBJ, quads (unedited)</button>
+      <button data-act="raw">Download raw TripoSR mesh (GLB)</button></div></div>
+    <div class="menu" tabindex="0"><span>Edit</span><div class="drop-menu">
+      <button data-act="undo">Undo <kbd>Ctrl+Z</kbd></button><button data-act="redo">Redo <kbd>Ctrl+Shift+Z</kbd></button><hr>
+      <button data-act="selall">Select / deselect all <kbd>A</kbd></button><button data-act="edit">Toggle Edit Mode <kbd>Tab</kbd></button><hr>
+      <button data-act="move">Move tool <kbd>G</kbd></button><button data-act="rotate">Rotate tool <kbd>R</kbd></button><button data-act="scale">Scale tool <kbd>S</kbd></button></div></div>
+    <div class="menu" tabindex="0"><span>View</span><div class="drop-menu">
+      <button data-act="frame">Frame selected <kbd>Numpad .</kbd></button><button data-act="ortho">Perspective / Ortho <kbd>Numpad 5</kbd></button><hr>
+      <button data-act="front">Front <kbd>Numpad 1</kbd></button><button data-act="right">Right <kbd>Numpad 3</kbd></button><button data-act="top">Top <kbd>Numpad 7</kbd></button></div></div>
+    <div class="menu" tabindex="0"><span>Help</span><div class="drop-menu"><button data-act="keys">Keyboard shortcuts</button></div></div>
+  </nav>
   <div class="tabs"><span class="tab on">Generate</span><span class="tab dim" title="Planned">Parts</span><span class="tab dim" title="Planned">Retopo</span><span class="tab dim" title="Planned">Script</span></div>
   <span class="grow"></span>
   <span id="device" class="chip">…</span>
@@ -18,7 +34,12 @@
 <div class="workspace">
   <!-- Left tool shelf -->
   <aside class="shelf">
-    <button class="tool on" data-tool="orbit" title="Orbit (MMB drag)">⟲</button>
+    <button class="tool on" data-tool="select" title="Select (click; drag = box select in Edit Mode)">➚</button>
+    <button class="tool" data-tool="move" title="Move (G)">✣</button>
+    <button class="tool" data-tool="rotate" title="Rotate (R)">↻</button>
+    <button class="tool" data-tool="scale" title="Scale (S)">⤢</button>
+    <hr>
+    <button class="tool" data-tool="orbit" title="Orbit on left mouse (MMB always orbits)">⟲</button>
     <button class="tool" data-tool="pan" title="Pan (Shift + MMB)">✥</button>
     <button class="tool" data-tool="zoom" title="Zoom (scroll)">⌕</button>
     <hr>
@@ -29,7 +50,8 @@
   <!-- Viewport -->
   <section class="viewport">
     <div class="vheader">
-      <select id="mode" class="dd"><option>Object Mode</option></select>
+      <select id="mode" class="dd"><option value="object">Object Mode</option><option value="edit">Edit Mode</option></select>
+      <div class="seg sm" id="selModes" hidden><button data-v="vert" class="on" title="Vertex select (1)">Vert</button><button data-v="edge" title="Edge select (2)">Edge</button><button data-v="face" title="Face select (3)">Face</button></div>
       <span class="sep"></span>
       <button class="ib on" data-view="persp" id="perspBtn" title="Perspective / Ortho (Numpad 5)">Persp</button>
       <span class="grow"></span>
@@ -46,7 +68,23 @@
       <input id="file" type="file" accept="image/*" hidden>
       <span>Drop a reference image anywhere in the viewport<br><small>or click to browse · single object, plain background works best</small></span>
     </label>
-    <div class="keys">MMB orbit · Shift+MMB pan · Wheel zoom · Numpad 1/3/7 views (Ctrl = opposite) · 5 ortho · . frame · Z wireframe</div>
+    <div class="keys">Click select · G move · R rotate · S scale (X/Y/Z axis, Ctrl snap, Esc cancel) · Tab Edit Mode · Ctrl+Z undo · MMB orbit · Shift+MMB pan · Wheel zoom · Numpad 1/3/7 · . frame</div>
+    <div id="help" class="help" hidden><b>Keyboard shortcuts</b> <small>(click to close)</small>
+      <table>
+        <tr><td>Left click</td><td>Select object / element (Shift = add/toggle)</td></tr>
+        <tr><td>Left drag (Select tool, Edit Mode)</td><td>Box select visible elements</td></tr>
+        <tr><td>G / R / S</td><td>Move / Rotate / Scale with the mouse; click or Enter to confirm</td></tr>
+        <tr><td>X / Y / Z (while moving)</td><td>Lock to an axis (press again to unlock)</td></tr>
+        <tr><td>Ctrl (while moving)</td><td>Snap: 0.1 units, 15°, 0.1× scale</td></tr>
+        <tr><td>Esc / right click</td><td>Cancel the current move</td></tr>
+        <tr><td>Tab</td><td>Object Mode ⇄ Edit Mode</td></tr>
+        <tr><td>1 / 2 / 3 (Edit Mode)</td><td>Vertex / Edge / Face select</td></tr>
+        <tr><td>A / Alt+A</td><td>Select all (toggle) / deselect all</td></tr>
+        <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
+        <tr><td>MMB drag / Shift+MMB / wheel</td><td>Orbit / Pan / Zoom</td></tr>
+        <tr><td>Numpad 1/3/7 (Ctrl = opposite), 5, .</td><td>Front/Right/Top, Persp/Ortho, Frame</td></tr>
+        <tr><td>Z</td><td>Toggle wireframe shading</td></tr>
+      </table></div>
   </section>
 
   <!-- Properties panel -->
@@ -71,7 +109,11 @@
     </details>
     <button id="go" class="primary" disabled>Generate 3D</button>
     <details open><summary>Export</summary>
-      <div class="row"><a id="dlGlb" class="btn disabled" download>GLB</a><a id="dlObj" class="btn disabled" download>OBJ (quads)</a></div>
+      <div class="hint0">Current mesh, including edits and transforms:</div>
+      <div class="row"><button class="btn" data-export="glb" disabled>GLB</button><button class="btn" data-export="obj" disabled>OBJ</button><button class="btn" data-export="stl" disabled>STL</button><button class="btn" data-export="ply" disabled>PLY</button></div>
+      <div class="row"><button class="btn" data-export="zip" disabled>Download model (.zip: mesh + preview)</button></div>
+      <div class="hint0">Server files (as generated, no edits):</div>
+      <div class="row"><a id="srvGlb" class="btn disabled" download>Processed GLB</a><a id="srvObj" class="btn disabled" download>OBJ (quads)</a><a id="rawGlb" class="btn disabled" download>Raw TripoSR</a></div>
     </details>
     <details open><summary>History</summary><ul id="history"></ul></details>
   </aside>

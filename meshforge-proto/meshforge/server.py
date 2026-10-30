@@ -53,12 +53,12 @@ def get_job(jid: str):
 
 @app.get("/api/jobs/{jid}/{name}")
 def job_file(jid: str, name: str):
-    if name not in ("mesh.glb", "mesh.obj", "input", "processed.png"):
+    if name not in ("mesh.glb", "mesh.obj", "raw.glb", "input", "processed.png"):
         raise HTTPException(404)
     path = Path(_job(jid).dir) / name
     if not path.is_file():
         raise HTTPException(404, "Not ready")
-    return FileResponse(path, filename=f"meshforge_{jid}_{name}" if name.startswith("mesh") else None)
+    return FileResponse(path, filename=f"meshforge_{jid}_{name}" if name.endswith((".glb", ".obj")) else None)
 
 
 @app.delete("/api/jobs/{jid}")
