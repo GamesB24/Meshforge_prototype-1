@@ -53,12 +53,12 @@ def get_job(jid: str):
 
 @app.get("/api/jobs/{jid}/{name}")
 def job_file(jid: str, name: str):
-    if name not in ("mesh.glb", "mesh.obj", "input", "processed.png"):
+    if name not in ("mesh.glb", "mesh.obj", "raw.glb", "input", "processed.png"):
         raise HTTPException(404)
     path = Path(_job(jid).dir) / name
     if not path.is_file():
         raise HTTPException(404, "Not ready")
-    return FileResponse(path, filename=f"meshforge_{jid}_{name}" if name.startswith("mesh") else None)
+    return FileResponse(path, filename=f"meshforge_{jid}_{name}" if name.endswith((".glb", ".obj")) else None)
 
 
 @app.delete("/api/jobs/{jid}")
@@ -71,6 +71,21 @@ def delete_job(jid: str):
     return {"ok": True}
 
 
+# v6: scene files (scene.json + meshes/) live in data/scenes/<name>/ (or MESHFORGE_SCENES_DIR) and are served at /scenes/
+SCENES = Path(os.environ.get("MESHFORGE_SCENES_DIR") or (Path(__file__).resolve().parent.parent / "data" / "scenes"))
+SCENES.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/api/scenes")
+def list_scenes():
+    out = []
+    for p in sorted(SCENES.glob("*/scene.json")) + sorted(SCENES.glob("*.json")):
+        rel = p.relative_to(SCENES).as_posix()
+        out.append({"name": p.parent.name if p.name == "scene.json" else p.stem, "url": f"/scenes/{rel}", "open": f"/?scene=/scenes/{rel}"})
+    return out
+
+
+app.mount("/scenes", StaticFiles(directory=str(SCENES)), name="scenes")
 app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="frontend")
 
 if __name__ == "__main__":

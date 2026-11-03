@@ -47,6 +47,37 @@ def _release_memory():
             pass
 
 
+def _save_raw(parts: dict, path: Path) -> bool:
+    try:
+        import trimesh
+        scene = trimesh.Scene()
+        for name, m in parts.items():
+            scene.add_geometry(m, node_name=name, geom_name=name)
+        scene.export(str(path))
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+def run_pipeline(img: Image.Image, out_dir, engine: str, runner: str, remove_bg: bool, params: dict, progress,
+                 recenter_alpha: bool = False) -> dict:
+    """The one generation path shared by the server job worker and meshforge.api (so results match the UI).
+    Writes processed.png, raw.glb, mesh.glb, mesh.obj into out_dir and returns export stats."""
+    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    proc = preprocess(img, remove_bg, float(params.get("fg_ratio", 0.85)), recenter_alpha=recenter_alpha)
+    proc.save(out / "processed.png")
+    parts = RUNNERS[runner].run(engine, proc, params, progress)
+    raw_ok = _save_raw(parts, out / "raw.glb")  # unprocessed engine output, for comparison
+    quads, info = {}, {}
+    if params.get("postprocess", True):
+        parts, quads, info = process_parts(parts, params, progress)
+    progress(0.92, "Exporting GLB / OBJ")
+    stats = export(parts, str(out / "mesh.glb"), str(out / "mesh.obj"), quads, info)
+    stats["raw"] = raw_ok
+    return stats
+
+
 class JobQueue:
     def __init__(self):
         self.jobs: dict[str, Job] = {}
@@ -91,14 +122,7 @@ class JobQueue:
                 j.status = "running"; progress(0.05, "Preprocessing image")
                 with Image.open(Path(j.dir) / "input") as im:  # close handle: Windows can't delete open files
                     im.load(); img = im.copy()
-                proc = preprocess(img, j.remove_bg, float(j.params.get("fg_ratio", 0.85)))
-                proc.save(Path(j.dir) / "processed.png")
-                parts = RUNNERS[j.runner].run(j.engine, proc, j.params, progress)
-                quads, info = {}, {}
-                if j.params.get("postprocess", True):
-                    parts, quads, info = process_parts(parts, j.params, progress)
-                progress(0.92, "Exporting GLB / OBJ")
-                j.stats = export(parts, str(Path(j.dir) / "mesh.glb"), str(Path(j.dir) / "mesh.obj"), quads, info)
+                j.stats = run_pipeline(img, j.dir, j.engine, j.runner, j.remove_bg, j.params, progress)
                 j.status, j.message = "done", "Done"; progress(1.0, "Done")
             except Exception as e:
                 traceback.print_exc()
