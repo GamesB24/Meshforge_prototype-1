@@ -1,0 +1,5 @@
+# Pins used by setup_windows.bat so pip never swaps the CUDA torch for a CPU one
+# and TripoSR's older transformers API keeps working (verified with 4.49 on Linux).
+torch==2.5.1
+torchvision==0.20.1
+transformers>=4.35,<4.50

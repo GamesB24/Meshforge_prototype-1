@@ -1,0 +1,19 @@
+# torch / torchvision / rembg / onnxruntime are installed by run.sh (CPU or CUDA wheels)
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart
+requests
+trimesh>=4
+fast-simplification
+pynanoinstantmeshes
+scikit-image
+numpy
+Pillow
+# TripoSR's own deps
+omegaconf
+einops
+transformers
+huggingface-hub
+imageio[ffmpeg]
+xatlas
+moderngl

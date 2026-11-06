@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeshForge 7.0 · Image to 3D</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/"}}</script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">◆ MeshForge <small>7.0</small></span>
+  <nav class="menus">
+    <div class="menu" tabindex="0"><span>File</span><div class="drop-menu">
+      <button data-act="import">Import image…</button><button data-act="scene">Import scene (GLB / manifest)…</button><button data-act="rigimp">Import rigged character (GLB / glTF)…</button><hr>
+      <button data-act="glb">Export GLB (.glb)</button><button data-act="obj">Export OBJ (.obj)</button>
+      <button data-act="stl">Export STL (.stl)</button><button data-act="ply">Export PLY (.ply)</button><hr>
+      <button data-act="zip">Download model (.zip: mesh + preview)</button><hr><button data-act="selglb">Export selected object (.glb)</button><button data-act="scenejson">Export scene (scene.json + scene.glb)</button><button data-act="dup">Duplicate object <kbd>Shift+D</kbd></button><button data-act="del">Delete object <kbd>Delete</kbd></button><hr>
+      <button data-act="srvglb">Download processed GLB (unedited)</button><button data-act="srvobj">Download processed OBJ, quads (unedited)</button>
+      <button data-act="raw">Download raw TripoSR mesh (GLB)</button></div></div>
+    <div class="menu" tabindex="0"><span>Edit</span><div class="drop-menu">
+      <button data-act="undo">Undo <kbd>Ctrl+Z</kbd></button><button data-act="redo">Redo <kbd>Ctrl+Shift+Z</kbd></button><hr>
+      <button data-act="selall">Select / deselect all <kbd>A</kbd></button><button data-act="edit">Toggle Edit Mode <kbd>Tab</kbd></button><button data-act="sculpt">Sculpt Mode on / off</button><hr>
+      <button data-act="move">Move tool <kbd>G</kbd></button><button data-act="rotate">Rotate tool <kbd>R</kbd></button><button data-act="scale">Scale tool <kbd>S</kbd></button></div></div>
+    <div class="menu" tabindex="0"><span>Add</span><div class="drop-menu">
+      <button data-act="sph2">Sphere · sculpt base (20k tris)</button><button data-act="sph3">Sphere · sculpt base (80k tris)</button><button data-act="sph4">Sphere · sculpt base (320k tris)</button><hr><button data-act="addsky">Sky dome (Toon Sky)</button><button data-act="addwater">Water plane (Toon Water)</button></div></div>
+    <div class="menu" tabindex="0"><span>View</span><div class="drop-menu">
+      <button data-act="frame">Frame selected <kbd>Numpad .</kbd></button><button data-act="ortho">Perspective / Ortho <kbd>Numpad 5</kbd></button><hr>
+      <button data-act="front">Front <kbd>Numpad 1</kbd></button><button data-act="right">Right <kbd>Numpad 3</kbd></button><button data-act="top">Top <kbd>Numpad 7</kbd></button><hr><button data-act="land">Landscape workspace on / off</button><button data-act="land2scene">Send landscape to scene</button><hr><button data-act="shader">Shader workspace</button><button data-act="uvws">UV workspace (2D paint)</button><button data-act="matlib">Material library window on / off</button></div></div>
+    <div class="menu" tabindex="0"><span>Help</span><div class="drop-menu"><button data-act="keys">Keyboard shortcuts</button><button data-act="skeys">Sculpt mode shortcuts</button></div></div>
+  </nav>
+  <div class="tabs"><span class="tab on" id="tabGen" title="Image to 3D">Generate</span><span class="tab" id="tabLand" title="Paint a map into a 3D landscape">Landscape</span><span class="tab dim" title="Planned">Parts</span><span class="tab dim" title="Planned">Retopo</span><span class="tab" id="tabShader" title="Chibili materials, material paint and textures">Shader</span><span class="tab" id="tabUV" title="UV unwrap and 2D texture paint (split view)">UV</span><span class="tab dim" title="Planned">Script</span></div>
+  <span class="grow"></span>
+  <span id="device" class="chip">…</span>
+  <span id="triCount" class="chip" hidden>0 tris</span>
+  <button id="sculptron" class="sculptron" title="Sculptron 3D: adaptive-detail sculpting. Triangles under the brush are subdivided as you sculpt (D in Sculpt Mode)">◈ Sculptron 3D</button>
+</header>
+
+<div class="workspace">
+  <!-- Left tool shelf -->
+  <aside class="shelf">
+    <button class="tool on" data-tool="select" title="Select (click; drag = box select in Edit Mode)">➚</button>
+    <button class="tool" data-tool="move" title="Move (G)">✣</button>
+    <button class="tool" data-tool="rotate" title="Rotate (R)">↻</button>
+    <button class="tool" data-tool="scale" title="Scale (S)">⤢</button>
+    <hr>
+    <button class="tool" data-tool="orbit" title="Orbit on left mouse (MMB always orbits)">⟲</button>
+    <button class="tool" data-tool="pan" title="Pan (Shift + MMB)">✥</button>
+    <button class="tool" data-tool="zoom" title="Zoom (scroll)">⌕</button>
+    <hr>
+    <button class="tool" id="frame" title="Frame selected (Numpad .)">⛶</button>
+    <button class="tool" id="upload2" title="Import image">⇪</button>
+  </aside>
+
+  <!-- Viewport -->
+  <section class="viewport">
+    <div class="vheader">
+      <select id="mode" class="dd"><option value="object">Object Mode</option><option value="edit">Edit Mode</option><option value="sculpt">Sculpt Mode</option></select>
+      <div class="seg sm" id="selModes" hidden><button data-v="vert" class="on" title="Vertex select (1)">Vert</button><button data-v="edge" title="Edge select (2)">Edge</button><button data-v="face" title="Face select (3)">Face</button></div>
+      <span class="sep"></span>
+      <button class="ib on" data-view="persp" id="perspBtn" title="Perspective / Ortho (Numpad 5)">Persp</button>
+      <span class="grow"></span>
+      <label class="ib"><input type="checkbox" id="ovWire"> Wireframe overlay</label>
+      <label class="ib"><input type="checkbox" id="ovGrid" checked> Grid</label>
+      <div class="shading" id="shading">
+        <button data-v="wire" title="Wireframe (Z)">◇</button><button data-v="solid" class="on" title="Solid">●</button><button data-v="matcap" title="Matcap">◐</button><button data-v="color" title="Vertex colour / original material">◉</button><button data-v="chibili" class="chib" title="Chibili: toon material preview">✦</button>
+      </div>
+    </div>
+    <canvas id="c"></canvas>
+    <canvas id="gizmo" width="96" height="96" title="Click an axis to snap the view"></canvas>
+    <div id="outliner" class="outliner" hidden>
+      <div class="ohead"><b>Scene</b><span class="grow"></span><button id="oDup" title="Duplicate (Shift+D)">⧉</button><button id="oDel" title="Delete (Delete)">🗑</button><button id="oPhoto" title="Show the original photo" hidden>📷</button></div>
+      <ul id="olist"></ul>
+      <label class="oexp" title="Spread objects apart along Z">Explode <input id="explode" type="range" min="0" max="2" step="0.05" value="0"></label>
+    </div>
+    <img id="photoOv" class="photo-ov" alt="original photo" hidden>
+    <input id="rigFile" type="file" accept=".glb,.gltf" hidden>
+    <input id="sceneFile" type="file" accept=".json,.glb,.gltf,application/json,model/gltf-binary" multiple hidden>
+    <div class="vinfo" id="vinfo">User Perspective<br><small>No object</small></div>
+    <label id="drop" class="drop">
+      <input id="file" type="file" accept="image/*" hidden>
+      <span>Drop a reference image anywhere in the viewport<br><small>or click to browse · single object, plain background works best</small></span>
+    </label>
+    <div class="keys">Click select · G move · R rotate · S scale (X/Y/Z axis, Ctrl snap, Esc cancel) · Tab Edit Mode · Ctrl+Z undo · MMB orbit · Shift+MMB pan · Wheel zoom · Numpad 1/3/7 · . frame</div>
+    <div id="help" class="help" hidden><b>Keyboard shortcuts</b> <small>(click to close)</small>
+      <table>
+        <tr><td>Left click</td><td>Select object / element (Shift = add/toggle)</td></tr>
+        <tr><td>Left drag (Select tool, Edit Mode)</td><td>Box select visible elements</td></tr>
+        <tr><td>G / R / S</td><td>Move / Rotate / Scale with the mouse; click or Enter to confirm</td></tr>
+        <tr><td>X / Y / Z (while moving)</td><td>Lock to an axis (press again to unlock)</td></tr>
+        <tr><td>Ctrl (while moving)</td><td>Snap: 0.1 units, 15°, 0.1× scale</td></tr>
+        <tr><td>Esc / right click</td><td>Cancel the current move</td></tr>
+        <tr><td>Tab</td><td>Object Mode ⇄ Edit Mode (from Sculpt Mode: back to Object Mode)</td></tr>
+        <tr><td>Mode menu ▸ Sculpt Mode</td><td>Sculpt the selected object (H inside Sculpt Mode lists the brush keys)</td></tr>
+        <tr><td>1 / 2 / 3 (Edit Mode)</td><td>Vertex / Edge / Face select</td></tr>
+        <tr><td>A / Alt+A</td><td>Select all (toggle) / deselect all</td></tr>
+        <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
+        <tr><td>MMB drag / Shift+MMB / wheel</td><td>Orbit / Pan / Zoom</td></tr>
+        <tr><td>Numpad 1/3/7 (Ctrl = opposite), 5, .</td><td>Front/Right/Top, Persp/Ortho, Frame</td></tr>
+        <tr><td>Z</td><td>Toggle wireframe shading</td></tr>
+        <tr><td>Delete / Shift+D</td><td>Delete / duplicate the selected object (v6 scenes)</td></tr>
+      </table></div>
+  </section>
+
+  <!-- Properties panel -->
+  <aside class="props">
+    <details open><summary>Input</summary>
+      <img id="preview" alt="" hidden>
+      <div class="row"><span>Image</span><b id="fname">none</b></div>
+      <label class="row chk"><input id="rembg" type="checkbox" checked> Remove background</label>
+    </details>
+    <details open><summary>Generator</summary>
+      <div class="row"><span>Engine</span><select id="engine"></select></div>
+      <div class="row"><span>Run on</span><div class="seg" id="runner"><button data-v="local" class="on">Local GPU</button><button data-v="cloud">Cloud GPU</button></div></div>
+      <div id="runnerHint" class="hint"></div>
+      <div class="row"><span>Resolution</span><input id="res" type="range" min="128" max="384" step="32" value="256"><b id="resV">256</b></div>
+    </details>
+    <details open><summary>Topology</summary>
+      <div class="row"><span>Remesh</span><select id="remesh"><option value="decimate">Triangles (decimate)</option><option value="quad">Quads (Instant Meshes)</option><option value="none">Keep raw</option></select></div>
+      <div class="row"><span>Target faces</span><input id="tf" type="range" min="500" max="50000" step="500" value="8000"><b id="tfV">8k</b></div>
+      <div class="row"><span>Sharp angle</span><input id="sa" type="range" min="10" max="90" step="5" value="40"><b id="saV">40°</b></div>
+      <div class="row"><span>Smoothing</span><input id="sm" type="range" min="0" max="1" step="0.05" value="0.3"><b id="smV">0.30</b></div>
+      <label class="row chk"><input id="split" type="checkbox"> Split loose pieces into objects</label>
+    </details>
+    <button id="go" class="primary" disabled>Generate 3D</button>
+    <details open><summary>Export</summary>
+      <div class="hint0">Current mesh, including edits and transforms:</div>
+      <div class="row"><button class="btn" data-export="glb" disabled>GLB</button><button class="btn" data-export="obj" disabled>OBJ</button><button class="btn" data-export="stl" disabled>STL</button><button class="btn" data-export="ply" disabled>PLY</button></div>
+      <div class="row"><button class="btn" data-export="zip" disabled>Download model (.zip: mesh + preview)</button></div>
+      <div class="hint0">Server files (as generated, no edits):</div>
+      <div class="row"><a id="srvGlb" class="btn disabled" download>Processed GLB</a><a id="srvObj" class="btn disabled" download>OBJ (quads)</a><a id="rawGlb" class="btn disabled" download>Raw TripoSR</a></div>
+    </details>
+    <details open><summary>History</summary><ul id="history"></ul></details>
+  </aside>
+</div>
+
+<footer class="statusbar">
+  <div class="timeline"><div class="bar"><i id="barFill"></i></div></div>
+  <span id="progMsg">Ready</span>
+  <span class="grow"></span>
+  <span id="stats"></span>
+</footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>
