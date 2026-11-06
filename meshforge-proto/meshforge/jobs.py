@@ -47,6 +47,19 @@ def _release_memory():
             pass
 
 
+def _save_raw(parts: dict, path: Path) -> bool:
+    try:
+        import trimesh
+        scene = trimesh.Scene()
+        for name, m in parts.items():
+            scene.add_geometry(m, node_name=name, geom_name=name)
+        scene.export(str(path))
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
 class JobQueue:
     def __init__(self):
         self.jobs: dict[str, Job] = {}
@@ -94,11 +107,13 @@ class JobQueue:
                 proc = preprocess(img, j.remove_bg, float(j.params.get("fg_ratio", 0.85)))
                 proc.save(Path(j.dir) / "processed.png")
                 parts = RUNNERS[j.runner].run(j.engine, proc, j.params, progress)
+                raw_ok = _save_raw(parts, Path(j.dir) / "raw.glb")  # unprocessed engine output, for comparison
                 quads, info = {}, {}
                 if j.params.get("postprocess", True):
                     parts, quads, info = process_parts(parts, j.params, progress)
                 progress(0.92, "Exporting GLB / OBJ")
                 j.stats = export(parts, str(Path(j.dir) / "mesh.glb"), str(Path(j.dir) / "mesh.obj"), quads, info)
+                j.stats["raw"] = raw_ok
                 j.status, j.message = "done", "Done"; progress(1.0, "Done")
             except Exception as e:
                 traceback.print_exc()

@@ -42,3 +42,19 @@ details .row:has(.btn){display:flex}
 .del{background:none;border:0;color:var(--mute);cursor:pointer}.del:hover{color:var(--err)}
 .statusbar{display:flex;align-items:center;gap:12px;padding:0 10px;background:var(--hdr);border-top:1px solid var(--line);color:var(--mute)}
 .timeline{width:280px}.bar{height:8px;background:#151515;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:var(--orange);transition:width .4s}
+/* v3: menus, tools, edit mode */
+.menus{display:flex;gap:2px}.menu{position:relative;outline:none}.menu>span{display:block;padding:4px 8px;margin:0;border-radius:4px;cursor:pointer;color:var(--text)}
+.menu:hover>span,.menu:focus-within>span{background:var(--wid2)}
+.drop-menu{display:none;position:absolute;top:100%;left:0;min-width:260px;background:#262626;border:1px solid #111;border-radius:5px;padding:4px;z-index:20;box-shadow:0 6px 18px #000a}
+.menu:focus-within .drop-menu{display:block}
+.drop-menu button{display:flex;justify-content:space-between;width:100%;background:none;border:0;color:var(--text);padding:5px 8px;text-align:left;font:inherit;border-radius:3px;cursor:pointer}
+.drop-menu button:hover{background:var(--acc)}.drop-menu hr{border:0;border-top:1px solid #3a3a3a;margin:3px 0}
+kbd{color:var(--mute);font:inherit;margin-left:14px}
+.seg.sm button{padding:2px 8px}
+.boxsel{position:absolute;border:1px dashed #fff;background:#ffffff14;pointer-events:none;z-index:3}
+.vinfo .sel{color:var(--orange)}
+.help{position:absolute;top:60px;left:50%;transform:translateX(-50%);background:#1f1f1fee;border:1px solid #444;border-radius:6px;padding:10px 14px;z-index:5;cursor:pointer}
+.help td{padding:2px 10px 2px 0}.help td:first-child{color:var(--orange);white-space:nowrap}
+.hint0{color:var(--mute);font-size:11px;margin-top:4px}
+button.btn{border:0;font:inherit;cursor:pointer}button.btn:disabled{opacity:.4;cursor:not-allowed}
+[hidden]{display:none!important}
