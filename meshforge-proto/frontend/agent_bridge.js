@@ -10,7 +10,7 @@ export function createAgentBridge(ctx) {
     connected: false,
     history: [],
     recognition: null,
-    ttsEnabled: true,
+    ttsEnabled: false, // Muted by default: zero unsolicited noise!
   };
 
   // ---------- Web Speech API (Voice Recognition) ----------
@@ -402,6 +402,7 @@ export function createAgentBridge(ctx) {
         <div class="ai-title"><span class="ai-dot"></span> AI Agent Bridge</div>
         <div class="grow"></div>
         <button id="aiVoiceBtn" class="ai-btn-icon" title="Toggle Voice Push-to-Talk (V)">🎙</button>
+        <button id="aiTtsBtn" class="ai-btn-icon" title="Toggle Voice Audio Output (Currently Muted)">🔇</button>
         <button id="aiSettingsBtn" class="ai-btn-icon" title="API Credentials & Cloud Login">⚙</button>
         <button id="aiCloseBtn" class="ai-btn-icon" title="Close">✕</button>
       </div>
@@ -434,6 +435,13 @@ export function createAgentBridge(ctx) {
     // Event hooks
     panel.querySelector('#aiCloseBtn').onclick = () => panel.classList.add('hidden');
     panel.querySelector('#aiVoiceBtn').onclick = () => toggleVoice();
+    const ttsBtn = panel.querySelector('#aiTtsBtn');
+    ttsBtn.onclick = () => {
+      S.ttsEnabled = !S.ttsEnabled;
+      ttsBtn.textContent = S.ttsEnabled ? '🔊' : '🔇';
+      ttsBtn.title = S.ttsEnabled ? 'Voice Audio Output (Active)' : 'Voice Audio Output (Muted)';
+      status(S.ttsEnabled ? 'Voice audio unmuted' : 'Voice audio muted');
+    };
     panel.querySelector('#aiSettingsBtn').onclick = () => {
       panel.querySelector('#aiSettings').classList.toggle('hidden');
     };

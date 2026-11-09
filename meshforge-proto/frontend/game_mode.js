@@ -99,6 +99,7 @@ export function createGameMode(ctx) {
     group.add(sign);
 
     group.position.set(6, 0, -4);
+    group.visible = false; // Hidden in DCC Editor; only visible when Play button is pressed
     scene.add(group);
     return group;
   }
@@ -111,19 +112,14 @@ export function createGameMode(ctx) {
     const projMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
     const proj = new THREE.Mesh(projGeo, projMat);
 
-    // Calculate spawn position at blaster tip
     const spawnPos = new THREE.Vector3(0.45, 0.75, 0.5).applyQuaternion(S.player.quaternion).add(S.player.position);
     proj.position.copy(spawnPos);
 
-    // Projectile direction based on player camera forward
     const fwd = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(S.pitch, S.yaw, 0, 'YXZ')).normalize();
     proj.userData = { velocity: fwd.multiplyScalar(28.0), life: 2.0 };
 
     scene.add(proj);
     S.projectiles.push(proj);
-
-    // Play blaster sound chime
-    status('⚡ Blaster fired!');
   }
 
   // Pointer lock mouse look
@@ -135,7 +131,7 @@ export function createGameMode(ctx) {
     S.pitch = Math.max(-Math.PI / 2.3, Math.min(Math.PI / 2.3, S.pitch));
   }
 
-  // Enter Play Mode
+  // Enter Play Mode (ONLY called when user clicks ▶ Play or Alt+P)
   function startPlay() {
     if (S.playing) return;
     S.playing = true;
@@ -146,12 +142,15 @@ export function createGameMode(ctx) {
     S.savedCamTarget.copy(controls.target);
     controls.enabled = false;
 
-    // Build or reveal player
+    // Reveal player & kiosk
     if (!S.player) S.player = buildPlayer();
-    else S.player.visible = true;
+    S.player.visible = true;
 
-    // Ensure Kiosk exists
     if (!S.kiosk) S.kiosk = buildKiosk();
+    S.kiosk.visible = true;
+
+    // Wake companion bot
+    companion?.setActive(true);
 
     // Reset player position
     S.player.position.set(0, 0, 0);
@@ -162,23 +161,20 @@ export function createGameMode(ctx) {
     // UI Updates
     document.body.classList.add('in-game');
     updateHUD(true);
-    status('🎮 GAME MODE ACTIVE: WASD to move · Mouse to aim · Click to shoot · Space to jump · V to talk · Esc to exit');
+    status('🎮 Play Mode: WASD move · Mouse aim · Click shoot · Esc exit');
 
-    // Companion welcome voice
-    companion?.showBubble('Battle stations ready! I am covering your back.', 'happy');
-    window.MeshForge?.agent?.speak('Entering game mode. I have your back.');
-
-    // Request pointer lock
     canvas.requestPointerLock();
   }
 
-  // Exit Play Mode
+  // Exit Play Mode (Return to 100% quiet DCC Editor)
   function stopPlay() {
     if (!S.playing) return;
     S.playing = false;
 
     document.exitPointerLock?.();
     if (S.player) S.player.visible = false;
+    if (S.kiosk) S.kiosk.visible = false;
+    companion?.setActive(false); // Companion goes completely dormant and silent
 
     // Restore DCC editor camera
     const cam = camera();
@@ -188,7 +184,7 @@ export function createGameMode(ctx) {
 
     document.body.classList.remove('in-game');
     updateHUD(false);
-    status('Exited Game Mode. Returned to DCC Editor.');
+    status('Returned to DCC Editor.');
   }
 
   // Toggle Play
@@ -197,9 +193,10 @@ export function createGameMode(ctx) {
     else startPlay();
   }
 
-  // Input listeners
+  // Input listeners: Only activate on explicit Alt+P or button click
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyP' && (e.altKey || document.activeElement.tagName === 'BODY')) {
+    if (e.code === 'KeyP' && e.altKey) {
+      e.preventDefault();
       togglePlay();
       return;
     }

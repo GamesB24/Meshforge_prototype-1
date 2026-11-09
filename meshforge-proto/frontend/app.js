@@ -291,7 +291,6 @@ renderer.setAnimationLoop(() => {
     editor.tick();
     sculpt.tick();
     if (land?.active && state.shading === 'chibili') applyLandShading();
-    companion.tick(delta);
     animTimeline.tick(delta);
     controls.update();
   }

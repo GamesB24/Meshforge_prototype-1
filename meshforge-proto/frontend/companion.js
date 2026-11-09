@@ -7,7 +7,7 @@ export function createCompanion(ctx) {
   const S = {
     bot: null,
     eyeMat: null,
-    active: true,
+    active: false, // Dormant by default: only wakes when game mode is activated
     target: null, // Player object or camera
     offset: new THREE.Vector3(-1.2, 1.3, -1.0),
     time: 0,
@@ -79,6 +79,7 @@ export function createCompanion(ctx) {
     group.add(ant);
 
     group.position.set(-1.5, 1.8, 1.5);
+    group.visible = false; // Dormant and invisible until Play Game is pressed
     scene.add(group);
     return group;
   }
@@ -94,7 +95,7 @@ export function createCompanion(ctx) {
     document.body.appendChild(bubbleEl);
   }
 
-  function showBubble(text, mood = 'neutral', duration = 4000) {
+  function showBubble(text, mood = 'neutral', duration = 3500) {
     if (!bubbleEl) return;
     setMood(mood);
     bubbleEl.innerHTML = `<span class="bubble-icon">🤖</span> <b>Echo:</b> ${text}`;
@@ -114,17 +115,17 @@ export function createCompanion(ctx) {
     else S.eyeMat.color.setHex(0x4fc3f7); // Serene blue
   }
 
-  // Tactical Threat Radar: Checks objects behind player's view
+  // Tactical Threat Radar: Checks objects behind player's view (in-game only)
   function checkTacticalSurroundings(playerPos, playerForward) {
+    if (!S.active) return;
     const now = performance.now();
-    if (now - S.lastWarningTime < 6000) return; // Prevent spam
+    if (now - S.lastWarningTime < 10000) return; // Prevent spam
 
     let threatFound = false;
     let threatName = '';
 
     scene.traverse((obj) => {
       if (threatFound || !obj.isMesh || obj === S.bot || obj.userData.isOverlay || obj.name.includes('Floor') || obj.name.includes('Sky')) return;
-      // Calculate vector from player to object
       const objWorldPos = new THREE.Vector3();
       obj.getWorldPosition(objWorldPos);
       const toObj = objWorldPos.clone().sub(playerPos);
@@ -134,8 +135,7 @@ export function createCompanion(ctx) {
       if (dist > 1.5 && dist < 8.0) {
         toObj.normalize();
         const dot = playerForward.dot(toObj);
-        // dot < -0.4 means the object is directly behind the player's view!
-        if (dot < -0.4) {
+        if (dot < -0.5) {
           threatFound = true;
           threatName = obj.name || 'Object';
         }
@@ -144,15 +144,15 @@ export function createCompanion(ctx) {
 
     if (threatFound) {
       S.lastWarningTime = now;
-      const warning = `Watch your six! Approaching hazard behind you: ${threatName}!`;
-      showBubble(warning, 'alert', 3500);
-      window.MeshForge?.agent?.speak?.(warning);
+      const warning = `Threat behind you: ${threatName}`;
+      showBubble(warning, 'alert', 3000);
+      // Visual notification only - no loud continuous voice chatter!
     }
   }
 
-  // Animation & follow tick (called each frame)
+  // Animation & follow tick (called each frame ONLY when game mode is active)
   function tick(delta = 0.016, playerTransform = null) {
-    if (!S.active || !S.bot) return;
+    if (!S.active || !S.bot || !playerTransform) return;
     S.time += delta;
 
     let targetPos = new THREE.Vector3();
