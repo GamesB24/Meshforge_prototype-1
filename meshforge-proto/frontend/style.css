@@ -148,3 +148,78 @@ body.uvsplit #c{width:50%}
 #uvPanel .row.wrap{flex-wrap:wrap}
 #uv2d .uvbar .btn{width:auto;flex:none;padding:0 10px;height:22px;line-height:20px}
 .uvmenu{position:fixed;z-index:60;display:flex;flex-direction:column;min-width:180px}.uvmenu[hidden]{display:none}.uvmenu b{padding:4px 10px;font-size:11px;opacity:.7}.uvmenu button{text-align:left}
+
+/* ---------- AI Agent Console ---------- */
+.ai-console{position:fixed;bottom:32px;right:16px;width:340px;height:420px;background:#20232ae6;border:1px solid #3c4454;border-radius:8px;display:flex;flex-direction:column;z-index:100;backdrop-filter:blur(8px);box-shadow:0 8px 28px rgba(0,0,0,.6)}
+.ai-console.hidden{display:none}
+.ai-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#181b22;border-bottom:1px solid #2d3340;border-radius:8px 8px 0 0}
+.ai-title{font-weight:700;color:#61afef;display:flex;align-items:center;gap:6px}
+.ai-dot{width:8px;height:8px;border-radius:50%;background:#98c379;box-shadow:0 0 6px #98c379}
+.ai-btn-icon{background:none;border:0;color:#abb2bf;font-size:14px;cursor:pointer;padding:2px 6px;border-radius:4px}
+.ai-btn-icon:hover{background:#2c313c;color:#fff}
+.ai-btn-icon.active{background:#e06c75;color:#fff;animation:pulse 1.2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(224,108,117,.7)}70%{box-shadow:0 0 0 8px rgba(224,108,117,0)}100%{box-shadow:0 0 0 0 rgba(224,108,117,0)}}
+.ai-settings{background:#1a1d24;padding:8px;border-bottom:1px solid #2d3340;display:flex;flex-direction:column;gap:6px;font-size:11px}
+.ai-settings.hidden{display:none}
+.ai-set-row{display:flex;gap:6px;align-items:center}
+.ai-set-row label{width:110px;color:#828997}
+.ai-inp{flex:1;background:#282c34;border:1px solid #3e4451;color:#dcdfe4;padding:3px 6px;border-radius:4px;font-size:11px}
+.btn-gsi{background:#4285f4;color:#fff;border:0;border-radius:4px;padding:4px 8px;cursor:pointer;font-weight:600}
+.btn.sm{padding:3px 8px;font-size:11px}
+.ai-log{flex:1;padding:10px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.ai-msg{padding:6px 10px;border-radius:6px;max-width:85%;line-height:1.4;font-size:11.5px}
+.ai-msg.bot{background:#2c313c;color:#e5c07b;align-self:flex-start;border-left:3px solid #61afef}
+.ai-msg.user{background:#4f7fd6;color:#fff;align-self:flex-end}
+.ai-form{display:flex;padding:6px 8px;background:#181b22;border-top:1px solid #2d3340;border-radius:0 0 8px 8px}
+.ai-form input{flex:1;background:#282c34;border:1px solid #3e4451;border-radius:4px;padding:6px 8px;color:#fff;font:inherit}
+.ai-send{background:#61afef;color:#1e1e24;border:0;font-weight:600;padding:0 12px;margin-left:6px;border-radius:4px;cursor:pointer}
+
+/* ---------- 3D Companion Speech Bubble ---------- */
+.companion-bubble{position:fixed;pointer-events:none;background:#1e222bb8;color:#e5c07b;border:1px solid #61afef;padding:6px 12px;border-radius:12px;font-size:11.5px;max-width:240px;transform:translate(-50%,-100%);z-index:90;backdrop-filter:blur(6px);box-shadow:0 4px 16px rgba(0,0,0,.5);transition:opacity .2s}
+.companion-bubble.hidden{opacity:0;visibility:hidden}
+.bubble-icon{margin-right:4px}
+
+/* ---------- Game Mode (Play in Viewport / PIE) ---------- */
+.game-btn{background:#2e7d32;color:#fff;font-weight:700;border:0;padding:3px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:4px}
+.game-btn:hover{background:#388e3c}
+body.in-game .shelf,body.in-game .props,body.in-game .vheader,body.in-game .statusbar,body.in-game .keys,body.in-game .topbar{display:none!important}
+body.in-game .workspace{grid-template-columns:1fr;height:100vh}
+body.in-game #c{cursor:crosshair}
+.game-hud{position:fixed;inset:0;pointer-events:none;z-index:80;display:flex;flex-direction:column;justify-content:space-between;padding:16px}
+.game-hud.hidden{display:none}
+.hud-crosshair{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#00e5ff;font-size:24px;font-weight:300;text-shadow:0 0 4px #000}
+.hud-top{display:flex;gap:12px;align-items:center;pointer-events:auto}
+.hud-chip{background:#181b22cc;border:1px solid #3c4454;color:#dcdfe4;padding:4px 12px;border-radius:16px;font-size:12px}
+.hud-exit{margin-left:auto;background:#e05555;color:#fff;border:0;border-radius:4px;padding:6px 12px;cursor:pointer;font-weight:600}
+.hud-prompt{align-self:center;background:#e8963acc;color:#000;padding:8px 16px;border-radius:8px;font-weight:700;font-size:13px;animation:pulse 1s infinite}
+.hud-prompt.hidden{display:none}
+.hud-bottom{display:flex;flex-direction:column;gap:6px;width:320px}
+.hud-bar{height:10px;background:#1e222b;border:1px solid #4f7fd6;border-radius:5px;overflow:hidden}
+.hud-bar-fill{display:block;height:100%;background:linear-gradient(90deg,#00e5ff,#4f7fd6)}
+.hud-hint{color:#abb2bf;font-size:11px;text-shadow:0 1px 2px #000}
+
+/* ---------- User Auth & Wallet Chip ---------- */
+.auth-chip{display:flex;align-items:center;gap:6px;background:#2d3340;padding:2px 8px;border-radius:12px;cursor:pointer;font-size:11px;color:#abb2bf}
+.auth-chip:hover{background:#3b4252;color:#fff}
+.auth-avatar{width:18px;height:18px;border-radius:50%;background:#61afef;object-fit:cover}
+.wallet-badge{background:#e8963a;color:#1d1d1d;font-weight:700;padding:1px 6px;border-radius:10px;font-size:10px}
+
+/* ---------- Animation Timeline & Dopesheet ---------- */
+.anim-timeline-bar{position:fixed;bottom:26px;left:40px;right:300px;background:#1e222be8;border-top:1px solid #3c4454;z-index:30;display:flex;flex-direction:column;backdrop-filter:blur(6px);transition:height .25s ease}
+.anim-timeline-bar.collapsed .anim-dopesheet-wrap{display:none}
+.anim-transport{height:28px;background:#181b22;display:flex;align-items:center;gap:4px;padding:0 8px;border-bottom:1px solid #2d3340}
+.anim-btn{background:#2c313c;border:0;color:#abb2bf;padding:3px 7px;border-radius:3px;cursor:pointer;font-size:11px}
+.anim-btn:hover{background:#3e4451;color:#fff}
+.anim-btn.on{background:#4f7fd6;color:#fff}
+.anim-btn.play{background:#2e7d32;color:#fff;font-weight:700}
+.anim-btn.key{background:#e8963a;color:#1d1d1d;font-weight:700}
+.anim-frame-input{display:flex;align-items:center;gap:4px;font-size:11px;color:#828997}
+.anim-frame-input input{width:46px;background:#282c34;border:1px solid #3e4451;color:#fff;padding:2px 4px;border-radius:3px;text-align:center}
+.anim-dopesheet-wrap{display:grid;grid-template-columns:120px 1fr;height:96px;background:#20232a}
+.anim-tracks-list{background:#181b22;border-right:1px solid #2d3340;display:flex;flex-direction:column;font-size:11px}
+.track-hdr{padding:4px 8px;font-weight:700;color:#61afef;border-bottom:1px solid #2d3340}
+.track-row{padding:4px 8px;color:#abb2bf;height:24px;line-height:24px}
+.anim-ruler-wrap{position:relative;overflow:hidden;background:#20232a;cursor:pointer}
+#tlDopesheetCanvas{display:block;width:100%;height:100%}
+.anim-playhead{position:absolute;top:0;bottom:0;width:2px;background:#e06c75;pointer-events:none}
+.anim-playhead::before{content:"▼";position:absolute;top:-2px;left:-4px;color:#e06c75;font-size:10px}

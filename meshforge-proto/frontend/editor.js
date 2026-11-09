@@ -84,7 +84,13 @@ export function createEditor(ctx) {
     if (tcTx.kind === 'verts') { pivot.updateMatrixWorld(); applyDelta(tcTx, pivot.matrixWorld.clone().multiply(pivotStartInv)); }
     ctx.updateInfo();
   });
-  tc.addEventListener('mouseUp', () => { if (tcTx) commit(tcTx, { translate: 'Move', rotate: 'Rotate', scale: 'Scale' }[tc.mode]); tcTx = null; });
+  tc.addEventListener('mouseUp', () => {
+    if (tcTx) commit(tcTx, { translate: 'Move', rotate: 'Rotate', scale: 'Scale' }[tc.mode]);
+    tcTx = null;
+    if (window.MeshForge?.anim?.isAutoKey?.() && S.sel) {
+      window.MeshForge.anim.insertKeyframe(S.sel, 'all');
+    }
+  });
 
   function updateGizmo() {
     const mode = { move: 'translate', rotate: 'rotate', scale: 'scale' }[S.tool];
@@ -524,8 +530,8 @@ export function createEditor(ctx) {
     g.updateMatrixWorld(true); return g;
   }
   async function encode(fmt, only) {
-    const g = exportGroup(only); if (!g || !g.children.length) throw new Error('No model loaded');
-    if (fmt === 'glb') return new Blob([await new GLTFExporter().parseAsync(g, { binary: true, animations: g.userData.animations || [] })], { type: 'model/gltf-binary' });
+    const anims = (g.userData.animations && g.userData.animations.length) ? g.userData.animations : (ctx.getModel()?.animations || []);
+    if (fmt === 'glb') return new Blob([await new GLTFExporter().parseAsync(g, { binary: true, animations: anims })], { type: 'model/gltf-binary' });
     if (fmt === 'obj') { if (needsMTL(g)) return new Blob([(await writeOBJBundle(g, baseName())).obj], { type: 'text/plain' }); return new Blob([new OBJExporter().parse(g)], { type: 'text/plain' }); }
     if (fmt === 'stl') return new Blob([new STLExporter().parse(g, { binary: true })], { type: 'model/stl' });
     if (fmt === 'ply') return new Blob([await new Promise((res) => new PLYExporter().parse(g, res, { binary: true }))], { type: 'application/octet-stream' });

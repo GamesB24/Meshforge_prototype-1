@@ -10,10 +10,17 @@ from fastapi.staticfiles import StaticFiles
 from .engines import list_engines, TRIPOSR_DIR_ON_PATH  # noqa: F401  (puts TripoSR on sys.path)
 from .jobs import JobQueue
 from .runners import RUNNERS
+from .auth import router as auth_router
+from .agent_bridge import router as agent_router
+from .sheet_generator import process_4sided_sheet
+import base64, io
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 app = FastAPI(title="MeshForge prototype")
 jobs = JobQueue()
+
+app.include_router(auth_router)
+app.include_router(agent_router)
 
 
 @app.get("/api/config")
@@ -83,6 +90,25 @@ def list_scenes():
         rel = p.relative_to(SCENES).as_posix()
         out.append({"name": p.parent.name if p.name == "scene.json" else p.stem, "url": f"/scenes/{rel}", "open": f"/?scene=/scenes/{rel}"})
     return out
+
+
+@app.post("/api/sheet/preprocess")
+async def preprocess_sheet(sheet: UploadFile = File(...)):
+    """Receives a 4-view character/model sheet and returns sliced orthographic views."""
+    data = await sheet.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(413, "Sheet image too large (20 MB max)")
+    try:
+        views = process_4sided_sheet(data)
+        out = {}
+        for name, img in views.items():
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            out[name] = f"data:image/png;base64,{b64}"
+        return {"ok": True, "views": out}
+    except Exception as e:
+        raise HTTPException(400, f"Failed to slice model sheet: {e}")
 
 
 app.mount("/scenes", StaticFiles(directory=str(SCENES)), name="scenes")

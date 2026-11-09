@@ -4,8 +4,11 @@ from .base import Runner
 
 
 def detect_device() -> str:
-    import torch
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
+    try:
+        import torch
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu (torch not installed)"
 
 
 class LocalRunner(Runner):
@@ -15,10 +18,15 @@ class LocalRunner(Runner):
         self.device = None
 
     def status(self):
-        import torch
-        self.device = self.device or detect_device()
-        name = torch.cuda.get_device_name(0) if self.device.startswith("cuda") else "CPU (no CUDA GPU found)"
-        return {"id": self.id, "label": self.label, "ready": True, "device": name}
+        try:
+            import torch
+            self.device = self.device or detect_device()
+            name = torch.cuda.get_device_name(0) if self.device.startswith("cuda") else "CPU (no CUDA GPU found)"
+            ready = True
+        except ImportError:
+            name = "CPU / Setup needed (torch not installed)"
+            ready = False
+        return {"id": self.id, "label": self.label, "ready": ready, "device": name}
 
     def run(self, engine_id, image, params, progress):
         eng = ENGINES.get(engine_id)

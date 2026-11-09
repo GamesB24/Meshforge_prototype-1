@@ -11,6 +11,11 @@ import { createSceneIO, bakeObject } from './scene.js';
 import { createMaterials } from './materials.js';
 import { CHIBILI } from './chibili.js';
 import { copyData } from './mfdata.js';
+import { createAuth } from './auth.js';
+import { createAgentBridge } from './agent_bridge.js';
+import { createCompanion } from './companion.js';
+import { createGameMode } from './game_mode.js';
+import { createAnimationTimeline } from './animation_timeline.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -238,7 +243,63 @@ function setWorkspace(w) {
 $('tabLand').onclick = () => setWorkspace('land'); $('tabGen').onclick = () => setWorkspace('gen');
 $('tabShader').onclick = () => setWorkspace('shader'); $('tabUV').onclick = () => setWorkspace('uv');
 window.MeshForgeLandscape = Object.assign(land, { setWorkspace });
-renderer.setAnimationLoop(() => { editor.tick(); sculpt.tick(); if (land?.active && state.shading === 'chibili') applyLandShading(); mats?.tick(); window.__mfTick?.(); controls.update(); renderer.render(scene, camera); drawGizmo(); });
+
+// ---------- Auth, AI Agent Bridge, Companion, Game Mode & Animation ----------
+const auth = createAuth({ status: (m) => { $('progMsg').textContent = m; } });
+const companion = createCompanion({ scene, camera: () => camera, status: (m) => { $('progMsg').textContent = m; } });
+const agentBridge = createAgentBridge({
+  scene, editor, getModel: () => (land?.active ? null : model), camera: () => camera, auth, status: (m) => { $('progMsg').textContent = m; }
+});
+const gameMode = createGameMode({
+  scene, canvas, camera: () => camera, controls, auth, companion, status: (m) => { $('progMsg').textContent = m; }
+});
+const animTimeline = createAnimationTimeline({
+  scene, editor, getModel: () => (land?.active ? null : model), status: (m) => { $('progMsg').textContent = m; }
+});
+
+// UI Event Wireup
+$('btnPlayGame')?.addEventListener('click', () => gameMode.togglePlay());
+$('topVoiceBtn')?.addEventListener('click', () => agentBridge.toggleVoice());
+$('btnOpenAIConsole')?.addEventListener('click', () => agentBridge.toggleConsole());
+$('userAuthChip')?.addEventListener('click', () => {
+  agentBridge.toggleConsole(true);
+  document.getElementById('aiSettings')?.classList.remove('hidden');
+});
+window.addEventListener('mf-auth-changed', (e) => {
+  const u = e.detail.user;
+  const nameEl = $('authName');
+  const credEl = $('authCredits');
+  if (nameEl) nameEl.textContent = (u.name || 'User').split(' ')[0];
+  if (credEl) credEl.textContent = `${u.wallet_credits} C`;
+  const avatar = document.querySelector('.auth-avatar');
+  if (avatar && u.picture) {
+    avatar.style.backgroundImage = `url(${u.picture})`;
+    avatar.style.backgroundSize = 'cover';
+  }
+});
+window.addEventListener('mf-wallet-changed', (e) => {
+  const credEl = $('authCredits');
+  if (credEl) credEl.textContent = `${e.detail.credits} C`;
+});
+
+const animClock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const delta = animClock.getDelta();
+  if (gameMode.isPlaying()) {
+    gameMode.tick(delta);
+  } else {
+    editor.tick();
+    sculpt.tick();
+    if (land?.active && state.shading === 'chibili') applyLandShading();
+    companion.tick(delta);
+    animTimeline.tick(delta);
+    controls.update();
+  }
+  mats?.tick();
+  window.__mfTick?.();
+  renderer.render(scene, camera);
+  if (!gameMode.isPlaying()) drawGizmo();
+});
 
 function loadGLB(url, onDone, onError) {
   new GLTFLoader().load(url, (g) => {
@@ -521,7 +582,7 @@ function addPrimitive(kind) {
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   applyShading(); updateInfo(); editor.select(mesh); return mesh;
 }
-Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addPrimitive('water'), matlib: () => mats.showLibrary(mats.libEl.hidden), shader: () => setWorkspace('shader'), uvws: () => setWorkspace('uv') });
+Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addPrimitive('water'), matlib: () => mats.showLibrary(mats.libEl.hidden), shader: () => setWorkspace('shader'), uvws: () => setWorkspace('uv'), playgame: () => gameMode.togglePlay(), aiconsole: () => agentBridge.toggleConsole() });
 document.querySelectorAll('.menu [data-act]').forEach((b) => b.onclick = () => { document.activeElement?.blur(); ACTIONS[b.dataset.act]?.(); });
 // scene.json: persist the material library and per-object slots; honour room.camera
 const _exportScene = window.MeshForge.exportScene;
@@ -548,6 +609,7 @@ Object.assign(window.MeshForge, {
     slots: (objId) => { const o = typeof objId === 'string' ? sceneObjects().find((m) => m.userData.sceneId === objId || m.name === objId) : (objId || editor.sel); return o?.userData.mf?.slots.slice() || null; },
   },
   addSky: () => addPrimitive('sky').name, addWater: () => addPrimitive('water').name, offline: () => !!state.offline,
+  auth, agent: agentBridge, companion, game: gameMode, anim: animTimeline,
 });
 Object.defineProperty(window.MeshForge, 'shading', { get: () => state.shading, configurable: true }); Object.defineProperty(window.MeshForge, 'workspace', { get: () => curWS, configurable: true });
 window.__meshforge.mats = mats; window.__meshforge.setShading = setShading; window.__meshforge.setWorkspace = setWorkspace; window.__meshforge.addPrimitive = addPrimitive; window.__meshforge.sceneObjects = sceneObjects;
