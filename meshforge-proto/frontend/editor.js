@@ -18,7 +18,11 @@ export function createEditor(ctx) {
   const { scene, controls, canvas } = ctx;
   const vp = canvas.parentElement;
   const cam = () => ctx.camera();
-  const S = { tool: 'select', mode: 'object', sel: null, selMode: 'vert', modal: null, mouse: new THREE.Vector2(-1, -1), quadCache: {}, down: null, box: null };
+  const S = {
+    tool: 'select', mode: 'object', sel: null, selList: [], selMode: 'vert', modal: null,
+    mouse: new THREE.Vector2(-1, -1), quadCache: {}, down: null, box: null,
+    space: 'world', snap: false, snapMove: 0.1, snapRot: Math.PI / 12, snapScale: 0.1, playbackLock: false,
+  };
   let E = null;                                   // edit-mode data (see buildEdit)
   const undoStack = [], redoStack = [];
   const rc = new THREE.Raycaster();
@@ -59,17 +63,82 @@ export function createEditor(ctx) {
         if (l > 1e-6) c.xy += d / l * px * 2.0 / res * c.w; gl_Position = c; }`,
     fragmentShader: outlineMat.fragmentShader,
   });
+  const outlines = [];
   let outline = null;
-  function select(obj) {
-    if (outline) { outline.parent?.remove(outline); outline = null; }
-    S.sel = obj || null;
-    if (obj && S.mode === 'object') {
-      if (obj.isSkinnedMesh) { outline = new THREE.SkinnedMesh(obj.geometry, outlineSkinMat); outline.bind(obj.skeleton, obj.bindMatrix); outline.bindMode = obj.bindMode; outline.frustumCulled = false; }
-      else outline = new THREE.Mesh(obj.geometry, outlineMat);
-      outline.userData.isOverlay = true; outline.raycast = () => {};
-      obj.add(outline);
+  function liveSelection() {
+    S.selList = S.selList.filter((o) => o && o.parent && !o.userData.isOverlay);
+    if (S.sel && S.sel.parent && !S.selList.includes(S.sel)) S.selList.push(S.sel);
+    S.sel = S.selList[S.selList.length - 1] || null;
+    return S.selList;
+  }
+  function outlineMaterial(active, skinned) {
+    const base = skinned ? outlineSkinMat : outlineMat;
+    const mat = base.clone();
+    mat.uniforms = {
+      color: { value: new THREE.Color(active ? 0xff9a2e : 0x8d5a24) },
+      px: outlineMat.uniforms.px,
+      res: outlineMat.uniforms.res,
+    };
+    return mat;
+  }
+  function clearOutlines() {
+    for (const o of outlines) o.parent?.remove(o);
+    outlines.length = 0;
+    outline = null;
+  }
+  function rebuildOutlines() {
+    clearOutlines();
+    if (S.mode !== 'object') return;
+    const list = S.selList.filter((o) => o && o.parent);
+    list.forEach((obj, i) => {
+      const active = i === list.length - 1;
+      let mesh;
+      if (obj.isSkinnedMesh) {
+        mesh = new THREE.SkinnedMesh(obj.geometry, outlineMaterial(active, true));
+        mesh.bind(obj.skeleton, obj.bindMatrix);
+        mesh.bindMode = obj.bindMode;
+      } else mesh = new THREE.Mesh(obj.geometry, outlineMaterial(active, false));
+      mesh.userData.isOverlay = true;
+      mesh.userData.isSelection = true;
+      mesh.raycast = () => {};
+      mesh.frustumCulled = false;
+      obj.add(mesh);
+      outlines.push(mesh);
+      if (active) outline = mesh;
+    });
+  }
+  // select(obj) replaces the selection. select(obj, { extend, toggle }) adds or removes one object.
+  function select(obj, opts = {}) {
+    const extend = !!opts.extend;
+    if (!obj) {
+      if (extend) return;
+      S.selList = [];
+      S.sel = null;
+      rebuildOutlines();
+      updateGizmo();
+      ctx.updateInfo();
+      return;
     }
-    updateGizmo(); ctx.updateInfo();
+    if (extend) {
+      const i = S.selList.indexOf(obj);
+      if (opts.toggle && i >= 0) S.selList.splice(i, 1);
+      else if (i >= 0) { S.selList.splice(i, 1); S.selList.push(obj); }
+      else S.selList.push(obj);
+    } else S.selList = [obj];
+    S.sel = S.selList[S.selList.length - 1] || null;
+    rebuildOutlines();
+    updateGizmo();
+    ctx.updateInfo();
+  }
+  function selectList(list, opts = {}) {
+    const next = [];
+    const seed = opts.extend ? S.selList : [];
+    for (const o of [...seed, ...(list || [])]) if (o && o.parent && !next.includes(o)) next.push(o);
+    S.selList = next;
+    S.sel = next[next.length - 1] || null;
+    rebuildOutlines();
+    updateGizmo();
+    ctx.updateInfo();
   }
 
   // ---------- transform gizmo ----------
@@ -78,27 +147,63 @@ export function createEditor(ctx) {
   const pivot = new THREE.Object3D(); scene.add(pivot);
   let tcTx = null, pivotStartInv = null;
   tc.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
-  tc.addEventListener('mouseDown', () => { tcTx = begin(); pivot.updateMatrixWorld(); pivotStartInv = pivot.matrixWorld.clone().invert(); });
+  tc.addEventListener('mouseDown', () => {
+    tcTx = begin();
+    if (!tcTx) return;
+    tcTx.usePivot = tcTx.kind === 'verts' || (tcTx.kind === 'obj' && tcTx.items.length > 1);
+    if (tcTx.usePivot) { pivot.updateMatrixWorld(); pivotStartInv = pivot.matrixWorld.clone().invert(); }
+  });
   tc.addEventListener('objectChange', () => {
     if (!tcTx) return;
-    if (tcTx.kind === 'verts') { pivot.updateMatrixWorld(); applyDelta(tcTx, pivot.matrixWorld.clone().multiply(pivotStartInv)); }
+    if (tcTx.usePivot) { pivot.updateMatrixWorld(); applyDelta(tcTx, pivot.matrixWorld.clone().multiply(pivotStartInv)); }
     ctx.updateInfo();
   });
   tc.addEventListener('mouseUp', () => {
-    if (tcTx) commit(tcTx, { translate: 'Move', rotate: 'Rotate', scale: 'Scale' }[tc.mode]);
+    if (tcTx) commit(tcTx, { translate: 'Move', rotate: 'Rotate', scale: 'Scale' }[tc.mode] || 'Transform');
     tcTx = null;
-    if (window.MeshForge?.anim?.isAutoKey?.() && S.sel) {
-      window.MeshForge.anim.insertKeyframe(S.sel, 'all');
-    }
+    if (window.MeshForge?.anim?.isAutoKey?.()) for (const o of liveSelection()) window.MeshForge.anim.insertKeyframe(o, 'all');
+    updateGizmo();
   });
 
+  function selectionCenter(list) {
+    const box = new THREE.Box3();
+    const b = new THREE.Box3();
+    for (const o of list) {
+      const g = o.geometry;
+      if (!g) continue;
+      if (!g.boundingBox) g.computeBoundingBox();
+      if (!g.boundingBox) continue;
+      o.updateMatrixWorld(true);
+      b.copy(g.boundingBox).applyMatrix4(o.matrixWorld);
+      box.union(b);
+    }
+    return box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
+  }
+  function applySnapSettings() {
+    tc.translationSnap = S.snap ? S.snapMove : null;
+    tc.rotationSnap = S.snap ? S.snapRot : null;
+    tc.scaleSnap = S.snap ? S.snapScale : null;
+  }
   function updateGizmo() {
-    const mode = { move: 'translate', rotate: 'rotate', scale: 'scale' }[S.tool];
+    const mode = { select: 'translate', move: 'translate', rotate: 'rotate', scale: 'scale' }[S.tool];
     tc.detach();
-    if (!mode || S.modal) return;
+    applySnapSettings();
+    if (!mode || S.modal || S.playbackLock) return;
     tc.setMode(mode);
-    if (S.mode === 'object' && S.sel) { tc.setSpace(mode === 'scale' ? 'local' : 'world'); tc.attach(S.sel); }
-    else if (S.mode === 'edit' && E && selectedVerts().length) {
+    const space = mode === 'scale' || S.space === 'local' ? 'local' : 'world';
+    tc.setSpace(space);
+    if (S.mode === 'object') {
+      const list = liveSelection();
+      if (list.length === 1) tc.attach(list[0]);
+      else if (list.length > 1) {
+        pivot.position.copy(selectionCenter(list));
+        pivot.quaternion.identity();
+        if (S.space === 'local' && S.sel) pivot.quaternion.copy(S.sel.getWorldQuaternion(new THREE.Quaternion()));
+        pivot.scale.set(1, 1, 1);
+        pivot.updateMatrixWorld(true);
+        tc.attach(pivot);
+      }
+    } else if (S.mode === 'edit' && E && selectedVerts().length) {
       pivot.position.copy(pivotWorld()); pivot.quaternion.identity(); pivot.scale.set(1, 1, 1); pivot.updateMatrixWorld();
       tc.setSpace('world'); tc.attach(pivot);
     }
@@ -107,8 +212,8 @@ export function createEditor(ctx) {
   // ---------- transactions / undo ----------
   function begin() {
     if (S.mode === 'object') {
-      const obj = S.sel; if (!obj) return null; obj.updateMatrixWorld(true);
-      return { kind: 'obj', obj, m0: obj.matrix.clone(), w0: obj.matrixWorld.clone() };
+      const list = liveSelection(); if (!list.length) return null;
+      return { kind: 'obj', items: list.map((obj) => { obj.updateMatrixWorld(true); return { obj, m0: obj.matrix.clone(), w0: obj.matrixWorld.clone() }; }) };
     }
     const ids = selectedVerts(); if (!E || !ids.length) return null;
     E.mesh.updateMatrixWorld(true);
@@ -120,28 +225,35 @@ export function createEditor(ctx) {
     const local = obj.parent ? obj.parent.matrixWorld.clone().invert().multiply(world) : world;
     local.decompose(obj.position, obj.quaternion, obj.scale); obj.updateMatrixWorld(true);
   }
-  function applyDelta(t, D, axisScale) {
+  function applyDelta(t, D) {
     if (t.kind === 'obj') {
-      if (axisScale) { t.m0.decompose(t.obj.position, t.obj.quaternion, t.obj.scale); t.obj.scale.multiply(axisScale.s); t.obj.updateMatrixWorld(true);
-        // keep the pivot (bbox centre) in place
-        const c0 = axisScale.P, c1 = new THREE.Box3().setFromObject(t.obj).getCenter(new THREE.Vector3());
-        t.obj.position.add(t.obj.parent ? t.obj.parent.worldToLocal(c0.clone()).sub(t.obj.parent.worldToLocal(c1.clone())) : c0.clone().sub(c1)); t.obj.updateMatrixWorld(true);
-        return; }
-      setLocalFromWorld(t.obj, D.clone().multiply(t.w0)); return;
+      for (const it of t.items) setLocalFromWorld(it.obj, D.clone().multiply(it.w0));
+      return;
     }
     const inv = t.mesh.matrixWorld.clone().invert(), v = new THREE.Vector3();
     t.ids.forEach((id, i) => { v.fromArray(t.w, i * 3).applyMatrix4(D).applyMatrix4(inv).toArray(E.U, id * 3); });
     syncGeometry(t.ids);
   }
+  function applyMatrices(objs, mats) {
+    objs.forEach((o, i) => { if (!o.parent || !mats[i]) return; mats[i].decompose(o.position, o.quaternion, o.scale); o.updateMatrixWorld(true); });
+    updateGizmo(); ctx.updateInfo();
+  }
+  function pushTransform(label, list, beforeMats) {
+    const objs = list.slice();
+    const after = objs.map((o) => o.matrix.clone());
+    push({ label, undo: () => applyMatrices(objs, beforeMats), redo: () => applyMatrices(objs, after) });
+  }
   function cancel(t) {
-    if (t.kind === 'obj') { t.m0.decompose(t.obj.position, t.obj.quaternion, t.obj.scale); t.obj.updateMatrixWorld(true); }
+    if (t.kind === 'obj') for (const it of t.items) { it.m0.decompose(it.obj.position, it.obj.quaternion, it.obj.scale); it.obj.updateMatrixWorld(true); }
     else restorePositions(t.mesh, t.P0);
   }
   function commit(t, label) {
     if (t.kind === 'obj') {
-      const m0 = t.m0, m1 = t.obj.matrix.clone(), obj = t.obj; if (m0.equals(m1)) return;
-      const set = (m) => { m.decompose(obj.position, obj.quaternion, obj.scale); obj.updateMatrixWorld(true); };
-      push({ label: label + ' object', undo: () => set(m0), redo: () => set(m1) });
+      if (!t.items.some((it) => !it.m0.equals(it.obj.matrix))) return;
+      const objs = t.items.map((it) => it.obj);
+      const before = t.items.map((it) => it.m0.clone());
+      const noun = objs.length > 1 ? `${objs.length} objects` : 'object';
+      pushTransform(label + ' ' + noun, objs, before);
     } else {
       const P0 = t.P0, P1 = t.mesh.geometry.attributes.position.array.slice(), mesh = t.mesh;
       push({ label: label + ' vertices', undo: () => restorePositions(mesh, P0), redo: () => restorePositions(mesh, P1) });
@@ -281,7 +393,12 @@ export function createEditor(ctx) {
     ctx.setSelModeUI(m); refreshOverlay(false); updateGizmo();
   }
   function selectAll(on) {
-    if (S.mode === 'object') { select(on ? (S.sel || meshes()[0]) : null); return; }
+    if (S.mode === 'object') {
+      const all = meshes();
+      if (on === false || (on === undefined && S.selList.length >= all.length && all.length)) select(null);
+      else selectList(all);
+      return;
+    }
     if (!E) return; const arr = { vert: E.selV, edge: E.selE, face: E.selF }[S.selMode];
     const any = arr.some((x) => x); arr.fill(on === undefined ? (any ? 0 : 1) : on ? 1 : 0);
     refreshOverlay(false); updateGizmo();
@@ -295,7 +412,7 @@ export function createEditor(ctx) {
       destroyEdit();
       const mesh = S.sel || meshes()[0];
       if (!mesh) { status('Load or generate a model first, or use Add ▸ Sphere'); ctx.setModeUI('object'); return; }
-      select(mesh); if (outline) { outline.parent?.remove(outline); outline = null; }
+      select(mesh); clearOutlines();
       if (!ctx.sculptEnter?.(mesh)) { S.mode = 'object'; select(mesh); ctx.setModeUI('object'); return; }
       S.mode = 'sculpt'; tc.detach(); ctx.setModeUI('sculpt'); ctx.updateInfo(); return;
     }
@@ -304,7 +421,7 @@ export function createEditor(ctx) {
       if (!mesh) { status('Load or generate a model first'); ctx.setModeUI('object'); return; }
       const nt = (mesh.geometry.index ? mesh.geometry.index.count : mesh.geometry.attributes.position.count) / 3;
       if (nt > MAX_EDIT_TRIS) { status(`Edit Mode is limited to ${MAX_EDIT_TRIS.toLocaleString()} triangles (this part has ${nt.toLocaleString()})`); ctx.setModeUI('object'); return; }
-      select(mesh); if (outline) { outline.parent?.remove(outline); outline = null; }
+      select(mesh); clearOutlines();
       const quad = await quadKeysFor(ctx.jobId());
       E = buildEdit(mesh, quad); S.mode = 'edit'; refreshOverlay(true);
       status(`Edit Mode · ${E.nv.toLocaleString()} verts · ${E.ne.toLocaleString()} ${E.useQuads ? 'quad ' : ''}edges · 1/2/3 select mode · G/R/S transform · A select all · Tab to leave`);
@@ -316,8 +433,30 @@ export function createEditor(ctx) {
 
   // ---------- picking ----------
   function pickObject(p, extend) {
-    const hit = hitTest(p, meshes());
-    select(hit ? hit.object : (extend ? S.sel : null));
+    const hit = hitTest(p, meshes().filter((o) => o.visible));
+    if (!hit) { if (!extend) select(null); return; }
+    select(hit.object, { extend, toggle: extend });
+  }
+  function boxSelectObjects(a, b, extend) {
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+    const r = rect(), c = cam(), picked = [], v = new THREE.Vector3();
+    for (const o of meshes()) {
+      if (!o.visible) continue;
+      const g = o.geometry; if (!g) continue;
+      if (!g.boundingBox) g.computeBoundingBox();
+      if (!g.boundingBox) continue;
+      o.updateMatrixWorld(true);
+      const bb = g.boundingBox;
+      const xs = [bb.min.x, bb.max.x], ys = [bb.min.y, bb.max.y], zs = [bb.min.z, bb.max.z];
+      let inside = false;
+      for (const x of xs) for (const y of ys) for (const z of zs) {
+        v.set(x, y, z).applyMatrix4(o.matrixWorld).project(c);
+        const sx = (v.x + 1) / 2 * r.width, sy = (1 - v.y) / 2 * r.height;
+        if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1 && v.z < 1) inside = true;
+      }
+      if (inside) picked.push(o);
+    }
+    selectList(picked, { extend });
   }
   function pickElement(p, extend) {
     const hit = hitTest(p, [E.mesh]);
@@ -401,7 +540,7 @@ export function createEditor(ctx) {
 
   // ---------- modal G / R / S ----------
   function pivotWorld() {
-    if (S.mode === 'object') return S.sel ? new THREE.Box3().setFromObject(S.sel).getCenter(new THREE.Vector3()) : new THREE.Vector3();
+    if (S.mode === 'object') { const list = liveSelection(); return list.length ? selectionCenter(list) : new THREE.Vector3(); }
     const ids = selectedVerts(), c = new THREE.Vector3(), v = new THREE.Vector3(); E.mesh.updateMatrixWorld(true);
     for (const w of ids) c.add(v.fromArray(E.U, w * 3).applyMatrix4(E.mesh.matrixWorld));
     return ids.length ? c.divideScalar(ids.length) : c;
@@ -423,30 +562,45 @@ export function createEditor(ctx) {
     S.modal = { kind, t, P, axis: null, m0, pc, w0: planePoint(m0, P), snap: false };
     tc.detach(); controls.enabled = false; updateModal();
   }
+  function worldAxis(name) {
+    const a = AXIS[name].clone();
+    if (S.space === 'local' && S.mode === 'object' && S.sel) a.applyQuaternion(S.sel.getWorldQuaternion(new THREE.Quaternion()));
+    return a.normalize();
+  }
+  function snapScalar(v, step) { return step > 0 ? Math.round(v / step) * step : v; }
   function updateModal() {
     const M = S.modal; if (!M) return;
-    const m = S.mouse.x < 0 ? M.m0 : S.mouse, ax = M.axis ? AXIS[M.axis] : null;
-    let D = new THREE.Matrix4(), txt = '', axisScale = null;
+    const m = S.mouse.x < 0 ? M.m0 : S.mouse;
+    const ax = M.axis ? worldAxis(M.axis) : null;
+    const useSnap = M.snap || S.snap;
+    let D = new THREE.Matrix4(), txt = '';
     if (M.kind === 'G') {
       const d = ax ? ax.clone().multiplyScalar(axisParam(m, M.P, ax) - axisParam(M.m0, M.P, ax)) : planePoint(m, M.P).sub(M.w0);
-      if (M.snap) d.set(Math.round(d.x * 10) / 10, Math.round(d.y * 10) / 10, Math.round(d.z * 10) / 10);
+      if (useSnap) d.set(snapScalar(d.x, S.snapMove), snapScalar(d.y, S.snapMove), snapScalar(d.z, S.snapMove));
       D.makeTranslation(d.x, d.y, d.z); txt = `Move  Δ ${d.x.toFixed(3)}, ${d.y.toFixed(3)}, ${d.z.toFixed(3)}`;
     } else if (M.kind === 'R') {
       const a0 = Math.atan2(-(M.m0.y - M.pc.y), M.m0.x - M.pc.x), a1 = Math.atan2(-(m.y - M.pc.y), m.x - M.pc.x);
-      let ang = a1 - a0; if (M.snap) ang = Math.round(ang / (Math.PI / 12)) * (Math.PI / 12);
+      let ang = a1 - a0; if (useSnap) ang = snapScalar(ang, S.snapRot);
       const toCam = cam().getWorldDirection(new THREE.Vector3()).negate();
       let axis = toCam; if (ax) { axis = ax.clone(); if (ax.dot(toCam) < 0) ang = -ang; }
       D = new THREE.Matrix4().makeTranslation(M.P.x, M.P.y, M.P.z).multiply(new THREE.Matrix4().makeRotationAxis(axis, ang)).multiply(new THREE.Matrix4().makeTranslation(-M.P.x, -M.P.y, -M.P.z));
       txt = `Rotate  ${THREE.MathUtils.radToDeg(ang).toFixed(1)}°`;
     } else {
-      let f = m.distanceTo(M.pc) / Math.max(M.m0.distanceTo(M.pc), 1); if (M.snap) f = Math.round(f * 10) / 10;
-      const s = ax ? new THREE.Vector3(1, 1, 1).add(ax.clone().multiplyScalar(f - 1)) : new THREE.Vector3(f, f, f);
-      D = new THREE.Matrix4().makeTranslation(M.P.x, M.P.y, M.P.z).multiply(new THREE.Matrix4().makeScale(s.x, s.y, s.z)).multiply(new THREE.Matrix4().makeTranslation(-M.P.x, -M.P.y, -M.P.z));
-      if (ax && M.t.kind === 'obj') axisScale = { s, P: M.P };
+      let f = m.distanceTo(M.pc) / Math.max(M.m0.distanceTo(M.pc), 1); if (useSnap) f = snapScalar(f, S.snapScale) || S.snapScale;
+      const sv = new THREE.Vector3(1, 1, 1);
+      if (M.axis) sv[M.axis] = f; else sv.set(f, f, f);
+      const T = new THREE.Matrix4().makeTranslation(M.P.x, M.P.y, M.P.z);
+      const Ti = new THREE.Matrix4().makeTranslation(-M.P.x, -M.P.y, -M.P.z);
+      const Sc = new THREE.Matrix4().makeScale(sv.x, sv.y, sv.z);
+      if (M.axis && S.space === 'local' && M.t.kind === 'obj' && S.sel) {
+        const R = new THREE.Matrix4().makeRotationFromQuaternion(S.sel.getWorldQuaternion(new THREE.Quaternion()));
+        D = T.multiply(R).multiply(Sc).multiply(R.clone().invert()).multiply(Ti);
+      } else D = T.multiply(Sc).multiply(Ti);
       txt = `Scale  ${f.toFixed(3)}`;
     }
-    applyDelta(M.t, D, axisScale);
-    status(`${txt}${M.axis ? `  along ${M.axis.toUpperCase()}` : ''}${M.snap ? '  (snap)' : ''}  ·  click/Enter confirm · Esc/right-click cancel · X/Y/Z axis · hold Ctrl to snap`);
+    applyDelta(M.t, D);
+    const spaceLabel = S.space === 'local' ? 'local' : 'global';
+    status(`${txt}${M.axis ? `  along ${M.axis.toUpperCase()} (${spaceLabel})` : ''}${useSnap ? '  (snap)' : ''}  ·  click/Enter confirm · Esc/right-click cancel · X/Y/Z axis · hold Ctrl to snap`);
   }
   function endModal(ok) {
     const M = S.modal; if (!M) return; S.modal = null; controls.enabled = true;
@@ -459,15 +613,18 @@ export function createEditor(ctx) {
   const local = (e) => { const r = rect(); return new THREE.Vector2(e.clientX - r.left, e.clientY - r.top); };
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   vp.addEventListener('pointerdown', (e) => {
+    if (S.playbackLock) return;
     if (S.modal) { e.preventDefault(); e.stopPropagation(); endModal(e.button === 0); return; }
     if (e.target !== canvas) return;
     if (S.mode === 'sculpt' || ctx.blockPointer?.(e)) { S.down = null; return; }
+    if (tc.object && e.button === 0) tc.pointerHover(ndc(local(e)));
     S.down = e.button === 0 ? { p: local(e), onGizmo: !!tc.object && tc.axis !== null } : null;
   }, true);
   addEventListener('pointermove', (e) => {
     S.mouse.copy(local(e));
-    if (S.modal) { S.modal.snap = e.ctrlKey; updateModal(); return; }
-    if (S.down && !S.down.onGizmo && S.mode === 'edit' && S.tool === 'select' && S.down.p.distanceTo(S.mouse) > 4) {
+    if (S.modal) { S.modal.snap = e.ctrlKey || S.snap; updateModal(); return; }
+    const boxing = S.down && !S.down.onGizmo && S.tool === 'select' && (S.mode === 'edit' || S.mode === 'object') && S.down.p.distanceTo(S.mouse) > 4;
+    if (boxing) {
       S.box = true; const a = S.down.p, b = S.mouse;
       Object.assign(boxDiv.style, { left: Math.min(a.x, b.x) + 'px', top: Math.min(a.y, b.y) + 'px', width: Math.abs(a.x - b.x) + 'px', height: Math.abs(a.y - b.y) + 'px' }); boxDiv.hidden = false;
     }
@@ -476,7 +633,12 @@ export function createEditor(ctx) {
     const d = S.down; S.down = null; boxDiv.hidden = true;
     if (!d || e.button !== 0 || d.onGizmo || tc.dragging) { S.box = false; return; }
     const p = local(e);
-    if (S.box) { S.box = false; boxSelect(d.p, p, e.shiftKey); return; }
+    if (S.box) {
+      S.box = false;
+      if (S.mode === 'edit') boxSelect(d.p, p, e.shiftKey);
+      else boxSelectObjects(d.p, p, e.shiftKey);
+      return;
+    }
     if (d.p.distanceTo(p) > 4) return;                  // it was an orbit drag
     if (S.mode === 'edit') pickElement(p, e.shiftKey); else pickObject(p, e.shiftKey);
   });
@@ -498,7 +660,7 @@ export function createEditor(ctx) {
     if (S.mode === 'sculpt') return false;
     if (k === 'g' || k === 'r' || k === 's') { e.preventDefault(); startModal(k.toUpperCase()); return true; }
     if (k === 'a') { e.preventDefault(); selectAll(e.altKey ? false : undefined); return true; }
-    if (k === 'escape' && S.mode === 'object' && S.sel) { select(null); return true; }
+    if (k === 'escape' && S.mode === 'object' && S.selList.length) { select(null); status('Selection cleared'); return true; }
     if (S.mode === 'edit' && ['Digit1', 'Digit2', 'Digit3'].includes(e.code)) { setSelMode({ Digit1: 'vert', Digit2: 'edge', Digit3: 'face' }[e.code]); return true; }
     return false;
   }
@@ -549,7 +711,7 @@ export function createEditor(ctx) {
     catch (err) { status('Export failed: ' + err.message); console.error(err); }
   }
   async function previewPNG() {
-    const hide = [tcHelper, outline].filter(Boolean), vis = hide.map((o) => o.visible); hide.forEach((o) => (o.visible = false));
+    const hide = [tcHelper, ...outlines].filter(Boolean), vis = hide.map((o) => o.visible); hide.forEach((o) => (o.visible = false));
     ctx.renderer.render(scene, cam());
     const blob = await new Promise((r) => ctx.renderer.domElement.toBlob(r, 'image/png'));
     hide.forEach((o, i) => (o.visible = vis[i])); return blob;
@@ -573,11 +735,102 @@ export function createEditor(ctx) {
     if (S.mode === 'sculpt') return ctx.sculptInfo?.() || '';
     if (S.mode === 'edit' && E) { const n = { vert: E.nv, edge: E.ne, face: E.nt }[S.selMode], s = { vert: E.selV, edge: E.selE, face: E.selF }[S.selMode].reduce((a, b) => a + b, 0);
       return `Edit Mode · ${s.toLocaleString()}/${n.toLocaleString()} ${{ vert: 'verts', edge: 'edges', face: 'tris' }[S.selMode]}`; }
-    return S.sel ? `Selected: ${S.sel.name || 'mesh'}` : '';
+    const n = liveSelection().length;
+    if (!n) return '';
+    return n === 1 ? `Selected: ${S.sel.name || 'mesh'}` : `Selected: ${n} objects · ${S.sel?.name || 'mesh'}`;
+  }
+  function getTransform(obj = S.sel) {
+    if (!obj) return null;
+    return {
+      position: [obj.position.x, obj.position.y, obj.position.z],
+      rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z].map((r) => THREE.MathUtils.radToDeg(r)),
+      scale: [obj.scale.x, obj.scale.y, obj.scale.z],
+      space: S.space,
+    };
+  }
+  function applyNumeric(channel, index, value) {
+    const list = liveSelection();
+    if (!list.length || !Number.isFinite(+value)) return false;
+    const key = 'xyz'[index];
+    if (!key || !['position', 'rotation', 'scale'].includes(channel)) return false;
+    const active = list[list.length - 1];
+    const prev = channel === 'rotation' ? THREE.MathUtils.radToDeg(active.rotation[key]) : active[channel][key];
+    let next = +value;
+    if (S.snap) {
+      const step = channel === 'rotation' ? THREE.MathUtils.radToDeg(S.snapRot) : channel === 'scale' ? S.snapScale : S.snapMove;
+      next = snapScalar(next, step);
+    }
+    const delta = next - prev;
+    if (Math.abs(delta) < 1e-8) return false;
+    const before = list.map((o) => o.matrix.clone());
+    for (const o of list) {
+      if (channel === 'rotation') o.rotation[key] += THREE.MathUtils.degToRad(delta);
+      else o[channel][key] += delta;
+      o.updateMatrixWorld(true);
+    }
+    pushTransform(`Set ${channel} ${key.toUpperCase()}`, list, before);
+    status(`Set ${channel} ${key.toUpperCase()} on ${list.length} object${list.length > 1 ? 's' : ''}`);
+    return true;
+  }
+  function align(axis) {
+    const list = liveSelection();
+    if (list.length < 2) { status('Select two or more objects to align'); return false; }
+    const key = axis;
+    if (!'xyz'.includes(key)) return false;
+    const active = list[list.length - 1];
+    const before = list.map((o) => o.matrix.clone());
+    const target = active.position[key];
+    for (const o of list) { if (o === active) continue; o.position[key] = target; o.updateMatrixWorld(true); }
+    pushTransform(`Align ${key.toUpperCase()}`, list, before);
+    status(`Aligned to ${active.name || 'active'} ${key.toUpperCase()}`);
+    return true;
+  }
+  function dropToGround() {
+    const list = liveSelection();
+    if (!list.length) return false;
+    const before = list.map((o) => o.matrix.clone());
+    for (const o of list) {
+      o.updateMatrixWorld(true);
+      const g = o.geometry; if (!g) continue;
+      if (!g.boundingBox) g.computeBoundingBox();
+      const box = g.boundingBox.clone().applyMatrix4(o.matrixWorld);
+      const origin = o.getWorldPosition(new THREE.Vector3());
+      const target = origin.clone(); target.y -= box.min.y;
+      o.position.copy(o.parent ? o.parent.worldToLocal(target) : target);
+      o.updateMatrixWorld(true);
+    }
+    pushTransform('Drop to ground', list, before);
+    status('Dropped selection onto Y = 0');
+    return true;
+  }
+  function setSpace(space) {
+    S.space = space === 'local' ? 'local' : 'world';
+    updateGizmo();
+    status(S.space === 'local' ? 'Local transform axes' : 'Global transform axes');
+  }
+  function setSnap(on, opts = {}) {
+    S.snap = !!on;
+    if (Number.isFinite(+opts.move) && +opts.move > 0) S.snapMove = +opts.move;
+    if (Number.isFinite(+opts.rotate) && +opts.rotate > 0) S.snapRot = THREE.MathUtils.degToRad(+opts.rotate);
+    if (Number.isFinite(+opts.scale) && +opts.scale > 0) S.snapScale = +opts.scale;
+    updateGizmo();
+  }
+  function setPlaybackLocked(on) {
+    S.playbackLock = !!on;
+    if (on && S.modal) endModal(false);
+    updateGizmo();
   }
   // test hook
-  const debug = { get S() { return S; }, get E() { return E; }, undoStack, redoStack, startModal, endModal, updateModal, pickObject, pickElement, boxSelect, encode, toScreen, meshes };
-  return { faceSelection, selectFaces, selectedEdgesW, rebuildEdit, encodeOBJBundle, get selMode() { return S.selMode; }, save, get sel() { return S.sel; }, pushHistory: push, clearHistory, undoStack: () => undoStack, handleKey, setTool, setMode, setSelMode, selectAll, undo, redo, exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; } };
+  const debug = { get S() { return S; }, get E() { return E; }, undoStack, redoStack, startModal, endModal, updateModal, pickObject, pickElement, boxSelect, boxSelectObjects, encode, toScreen, meshes, get tc() { return tc; }, get selection() { return liveSelection(); } };
+  return {
+    faceSelection, selectFaces, selectedEdgesW, rebuildEdit, encodeOBJBundle, get selMode() { return S.selMode; }, save,
+    get sel() { return S.sel; }, selection: () => liveSelection().slice(), isSelected: (o) => liveSelection().includes(o),
+    selectList, pushHistory: push, clearHistory, undoStack: () => undoStack, handleKey, setTool, setMode, setSelMode, selectAll, undo, redo,
+    exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; },
+    getTransform, applyNumeric, align, dropToGround, setSpace, getSpace: () => S.space,
+    setSnap, getSnap: () => ({ on: S.snap, move: S.snapMove, rotate: THREE.MathUtils.radToDeg(S.snapRot), scale: S.snapScale }),
+    setPlaybackLocked,
+  };
 }
 
 // Minimal store-only ZIP writer (no compression) so the download works fully offline.

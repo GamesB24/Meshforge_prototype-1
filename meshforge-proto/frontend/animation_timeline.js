@@ -139,25 +139,35 @@ export function createAnimationTimeline(ctx) {
     return clip;
   }
 
-  // Set Current Frame & Scrubber
-  function setFrame(f) {
+  function objectByUUID(uuid) {
+    let found = null;
+    scene.traverse((o) => { if (!found && o.uuid === uuid) found = o; });
+    return found;
+  }
+
+  // Apply stored keys to every keyed object, not only the selection.
+  function evaluateAll(frame) {
+    for (const [uuid, data] of S.keyframeData) {
+      const obj = objectByUUID(uuid);
+      if (obj) interpolateTransform(obj, data, frame);
+    }
+  }
+
+  function keyedNames() {
+    const names = [];
+    for (const [uuid, data] of S.keyframeData) {
+      const has = ['position', 'rotation', 'scale'].some((k) => data[k]?.length);
+      if (!has) continue;
+      const obj = objectByUUID(uuid);
+      if (obj?.name) names.push(obj.name);
+    }
+    return names;
+  }
+
+  // Set Current Frame & Scrubber. opts.apply === false updates the playhead without moving objects.
+  function setFrame(f, opts = {}) {
     S.currentFrame = Math.max(S.startFrame, Math.min(S.endFrame, Math.round(f)));
-    const time = S.currentFrame / S.fps;
-
-    // Apply values at current frame to selected object
-    const obj = editor.sel;
-    if (obj && !S.playing) {
-      const data = getObjectKeyframes(obj);
-      if (data) {
-        interpolateTransform(obj, data, S.currentFrame);
-      }
-    }
-
-    if (S.activeAction) {
-      S.activeAction.time = time;
-      S.mixer.update(0);
-    }
-
+    if (opts.apply !== false) evaluateAll(S.currentFrame);
     updateUI();
   }
 
@@ -218,7 +228,6 @@ export function createAnimationTimeline(ctx) {
         }
       }
       setFrame(S.currentFrame);
-      S.mixer.update(delta);
     }
   }
 
@@ -410,5 +419,11 @@ export function createAnimationTimeline(ctx) {
     bakeAnimationClip,
     renderDopesheet,
     isAutoKey: () => S.autoKey,
+    isPlaying: () => S.playing,
+    getFrame: () => S.currentFrame,
+    getStartFrame: () => S.startFrame,
+    getEndFrame: () => S.endFrame,
+    keyedNames,
+    evaluateAll,
   };
 }

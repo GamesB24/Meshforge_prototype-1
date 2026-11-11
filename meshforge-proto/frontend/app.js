@@ -16,6 +16,8 @@ import { createAgentBridge } from './agent_bridge.js';
 import { createCompanion } from './companion.js';
 import { createGameMode } from './game_mode.js';
 import { createAnimationTimeline } from './animation_timeline.js';
+import { buildKioskSample } from './sample_scene.js';
+import { BEHAVIOUR_TYPES, listBehaviours, setBehaviours } from './behaviours.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -129,6 +131,7 @@ function frameModel() {
 let viewLabel = 'User Perspective';
 function updateInfo() {
   refreshOutliner?.();
+  refreshXform?.();
   if (land?.active) return;
   let tris = 0; model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay) tris += Math.min(o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count, o.geometry.drawRange.count) / 3; });
   const objs = model ? model.children.filter((o) => o.isMesh || o.children.length).length || 1 : 0;
@@ -140,8 +143,9 @@ function updateInfo() {
 
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (gameMode?.handleKey?.(e)) return;
   if (sculpt?.active && sculpt.handleKey(e)) return;
-  if (!land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
+  if (!gameMode?.isActive?.() && !land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
     if (e.key === 'Delete') { if (editor.sel) { e.preventDefault(); deleteObject(); return; } }
     if (e.shiftKey && (e.key === 'D' || e.key === 'd')) { if (editor.sel) { e.preventDefault(); duplicateObject(); return; } }
   }
@@ -246,19 +250,30 @@ window.MeshForgeLandscape = Object.assign(land, { setWorkspace });
 
 // ---------- Auth, AI Agent Bridge, Companion, Game Mode & Animation ----------
 const auth = createAuth({ status: (m) => { $('progMsg').textContent = m; } });
-const companion = createCompanion({ scene, camera: () => camera, status: (m) => { $('progMsg').textContent = m; } });
-const agentBridge = createAgentBridge({
-  scene, editor, getModel: () => (land?.active ? null : model), camera: () => camera, auth, status: (m) => { $('progMsg').textContent = m; }
+const companion = createCompanion({
+  camera: () => camera,
+  status: (m) => { $('progMsg').textContent = m; },
+  findAnchor: () => { let found = null; model?.traverse((o) => { if (!found && (o.name === 'Companion_Drone' || o.name === 'Companion_Echo')) found = o; }); return found; },
 });
-const gameMode = createGameMode({
-  scene, canvas, camera: () => camera, controls, auth, companion, status: (m) => { $('progMsg').textContent = m; }
+let addSceneMesh = (mesh, info) => { scene.add(mesh); editor.select(mesh); return mesh; };
+const agentBridge = createAgentBridge({
+  scene, editor, getModel: () => (land?.active ? null : model), camera: () => camera, auth,
+  status: (m) => { $('progMsg').textContent = m; },
+  addObject: (mesh, info) => addSceneMesh(mesh, info),
 });
 const animTimeline = createAnimationTimeline({
   scene, editor, getModel: () => (land?.active ? null : model), status: (m) => { $('progMsg').textContent = m; }
 });
+const gameMode = createGameMode({
+  scene, canvas, camera: () => camera, controls, status: (m) => { $('progMsg').textContent = m; },
+  getModel: () => model, editor, anim: animTimeline, isLandscape: () => !!land?.active,
+});
 
 // UI Event Wireup
-$('btnPlayGame')?.addEventListener('click', () => gameMode.togglePlay());
+$('btnPlayGame')?.addEventListener('click', () => gameMode.startPlay());
+$('btnPauseGame')?.addEventListener('click', () => gameMode.pausePlay());
+$('btnStopGame')?.addEventListener('click', () => gameMode.stopPlay());
+$('btnRestartGame')?.addEventListener('click', () => gameMode.restart());
 $('topVoiceBtn')?.addEventListener('click', () => agentBridge.toggleVoice());
 $('btnOpenAIConsole')?.addEventListener('click', () => agentBridge.toggleConsole());
 $('userAuthChip')?.addEventListener('click', () => {
@@ -285,19 +300,17 @@ window.addEventListener('mf-wallet-changed', (e) => {
 const animClock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const delta = animClock.getDelta();
-  if (gameMode.isPlaying()) {
-    gameMode.tick(delta);
-  } else {
-    editor.tick();
-    sculpt.tick();
-    if (land?.active && state.shading === 'chibili') applyLandShading();
-    animTimeline.tick(delta);
-    controls.update();
-  }
+  editor.tick();
+  if (!gameMode.isActive()) sculpt.tick();
+  if (land?.active && state.shading === 'chibili') applyLandShading();
+  if (gameMode.isSimulating()) gameMode.tick(delta);
+  else animTimeline.tick(delta);
+  if (gameMode.allowsOrbit()) controls.update();
+  companion.tick?.();
   mats?.tick();
   window.__mfTick?.();
   renderer.render(scene, camera);
-  if (!gameMode.isPlaying()) drawGizmo();
+  drawGizmo();
 });
 
 function loadGLB(url, onDone, onError) {
@@ -455,19 +468,76 @@ const sceneIO = createSceneIO({
     const ph = man?.photo; $('photoOv').hidden = true; $('oPhoto').hidden = !ph; if (ph) $('photoOv').src = sceneIO.resolve(ph);
   },
 });
+addSceneMesh = (mesh, info = {}) => {
+  if (land?.active) setWorkspace('gen');
+  const behaviours = mesh.userData.behaviours || info.behaviours;
+  let root = model;
+  if (root?.userData.isScene) {
+    sceneIO.addObject(root, mesh, { id: info.id || mesh.name, label: info.label || mesh.name, source: info.source || 'primitive', behaviours });
+  } else if (root) {
+    mesh.name = info.label || mesh.name || 'Object';
+    if (Array.isArray(behaviours)) mesh.userData.behaviours = JSON.parse(JSON.stringify(behaviours));
+    root.add(mesh);
+  } else {
+    root = sceneIO.ensureRoot(false);
+    if (!scene.children.includes(root)) scene.add(root);
+    sceneIO.addObject(root, mesh, { id: info.id || mesh.name, label: info.label || mesh.name, source: info.source || 'primitive', behaviours });
+  }
+  applyShading();
+  $('drop').classList.add('hidden');
+  document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  editor.select(mesh);
+  updateInfo();
+  return mesh;
+};
+function findObject(id) {
+  if (!id) return editor.sel;
+  if (id.isMesh) return id;
+  let found = null;
+  model?.traverse((o) => { if (!found && o.isMesh && !o.userData.isOverlay && (o.userData.sceneId === id || o.name === id || o.uuid === id)) found = o; });
+  return found;
+}
+function loadKioskSample() {
+  if (gameMode.isActive()) gameMode.stopPlay();
+  if (land?.active) setWorkspace('gen');
+  const parts = buildKioskSample();
+  for (const mesh of parts) addSceneMesh(mesh, { label: mesh.name, source: 'sample', behaviours: mesh.userData.behaviours });
+  editor.select(null);
+  const player = parts.find((p) => p.name === 'Player');
+  if (player) editor.select(player);
+  frameModel();
+  $('progMsg').textContent = `Loaded the kiosk sample (${parts.length} objects). Press Play to run this scene.`;
+  return parts.map((p) => p.name);
+}
 function sceneObjects() { return model ? model.children.filter((o) => o.isMesh && !o.userData.isOverlay) : []; }
+function outlineObjects() {
+  if (!model || land?.active) return [];
+  const list = [];
+  model.traverse((o) => { if (o.isMesh && !o.userData.isOverlay && !o.userData.isSelection) list.push(o); });
+  return list;
+}
 var olistKey = '';
 function refreshOutliner() {
   const el = $('outliner'); if (!el) return;
-  const objs = model?.userData.isScene && !land?.active ? sceneObjects() : [];
-  el.hidden = !objs.length; if (!objs.length) { olistKey = ''; return; }
-  const sel = editor?.sel;
-  const key = objs.map((o) => `${o.uuid}${o.visible ? 1 : 0}${o === sel ? 1 : 0}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
+  const objs = outlineObjects();
+  el.hidden = !objs.length;
+  const exp = el.querySelector('.oexp'); if (exp) exp.hidden = !model?.userData.isScene;
+  if (!objs.length) { olistKey = ''; return; }
+  const key = objs.map((o) => `${o.uuid}${o.visible ? 1 : 0}${editor?.isSelected?.(o) ? 1 : 0}${o === editor?.sel ? 'a' : ''}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  $('olist').innerHTML = objs.map((o, i) => `<li data-i="${i}" class="${o === sel ? 'sel' : ''} ${o.visible ? '' : 'hid'}"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name)}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
+  $('olist').innerHTML = objs.map((o, i) => `<li data-i="${i}" class="${editor.isSelected(o) ? 'sel' : ''} ${o === editor.sel ? 'active' : ''} ${o.visible ? '' : 'hid'}"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name)}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
   $('olist').querySelectorAll('li').forEach((li) => {
     const o = objs[+li.dataset.i];
-    li.onclick = (e) => { if (e.target.classList.contains('eye')) { o.visible = !o.visible; if (!o.visible && editor.sel === o && editor.mode === 'object') editor.select(null); updateInfo(); return; } selectObject(o); };
+    li.onclick = (e) => {
+      if (e.target.classList.contains('eye')) {
+        o.visible = !o.visible;
+        if (!o.visible && editor.isSelected(o)) editor.select(o, { extend: true, toggle: true });
+        updateInfo();
+        return;
+      }
+      if (e.shiftKey) editor.select(o, { extend: true, toggle: true });
+      else selectObject(o);
+    };
   });
 }
 async function selectObject(o) {
@@ -477,25 +547,51 @@ async function selectObject(o) {
   o.visible = true; editor.select(o); updateInfo(); return true;
 }
 var dupN = 0;
-async function duplicateObject() {
-  const src = editor.sel; if (!src || !src.parent) return null;
-  if (editor.mode !== 'object') await editor.setMode('object');
-  const mat = (src.userData.orig || src.material).clone();
-  const c = new THREE.Mesh(copyData(src.geometry, src.geometry.clone()), mat); c.position.copy(src.position); c.quaternion.copy(src.quaternion); c.scale.copy(src.scale);
-  const sz = new THREE.Box3().setFromObject(src).getSize(new THREE.Vector3()); c.position.x += Math.max(sz.x * 1.1, 0.05) / (src.parent.scale.x || 1);
+function cloneOne(src) {
+  const matSrc = src.userData.orig || src.material;
+  const mat = Array.isArray(matSrc) ? matSrc.map((m) => m.clone()) : matSrc.clone();
+  const c = new THREE.Mesh(copyData(src.geometry, src.geometry.clone()), mat);
+  c.position.copy(src.position); c.quaternion.copy(src.quaternion); c.scale.copy(src.scale);
+  const sz = new THREE.Box3().setFromObject(src).getSize(new THREE.Vector3());
+  c.position.x += Math.max(sz.x * 1.1, 0.05) / (src.parent?.scale.x || 1);
   c.name = `${src.name}.${String(++dupN).padStart(3, '0')}`;
   c.userData = { sceneId: src.userData.sceneId ? `${src.userData.sceneId}_copy${dupN}` : undefined, label: c.name, source: src.userData.source, ref: src.userData.ref, avgColor: src.userData.avgColor, note: src.userData.note };
+  if (Array.isArray(src.userData.behaviours)) c.userData.behaviours = JSON.parse(JSON.stringify(src.userData.behaviours.map((b) => ({ type: b.type, enabled: b.enabled !== false, params: b.params || {} }))));
   if (src.userData.mf) { c.userData.mf = JSON.parse(JSON.stringify(src.userData.mf)); const t = mats?.texOf(src); if (t) mats.adoptTextureImage(c, t.canvas, t.name); }
-  const parent = src.parent; parent.add(c); applyShading();
-  editor.pushHistory({ label: 'Duplicate object', undo: () => { if (editor.sel === c) editor.select(null); parent.remove(c); updateInfo(); }, redo: () => { parent.add(c); updateInfo(); } });
-  editor.select(c); updateInfo(); $('progMsg').textContent = `Duplicated ${src.name} → ${c.name} · Ctrl+Z to undo`; return c;
+  return c;
 }
-async function deleteObject(o = editor.sel) {
-  if (!o || !o.parent) return false;
+async function duplicateObject() {
+  const list = editor.selection().filter((o) => o.parent);
+  if (!list.length) return null;
   if (editor.mode !== 'object') await editor.setMode('object');
-  const parent = o.parent; editor.select(null); parent.remove(o);
-  editor.pushHistory({ label: 'Delete object', undo: () => { parent.add(o); updateInfo(); }, redo: () => { if (editor.sel === o) editor.select(null); parent.remove(o); updateInfo(); } });
-  updateInfo(); $('progMsg').textContent = `Deleted ${o.name} · Ctrl+Z to undo`; return true;
+  const created = list.map((src) => { const c = cloneOne(src); src.parent.add(c); return c; });
+  applyShading();
+  editor.pushHistory({
+    label: created.length > 1 ? `Duplicate ${created.length} objects` : 'Duplicate object',
+    undo: () => { editor.select(null); created.forEach((c) => c.parent?.remove(c)); updateInfo(); },
+    redo: () => { created.forEach((c, i) => list[i].parent?.add(c)); updateInfo(); },
+  });
+  editor.select(null);
+  created.forEach((c) => editor.select(c, { extend: true }));
+  updateInfo();
+  $('progMsg').textContent = created.length > 1 ? `Duplicated ${created.length} objects · Ctrl+Z to undo` : `Duplicated ${list[0].name} → ${created[0].name} · Ctrl+Z to undo`;
+  return created[0];
+}
+async function deleteObject(o) {
+  const list = (o ? [o] : editor.selection()).filter((x) => x && x.parent);
+  if (!list.length) return false;
+  if (editor.mode !== 'object') await editor.setMode('object');
+  const recs = list.map((obj) => ({ obj, parent: obj.parent }));
+  editor.select(null);
+  recs.forEach((r) => r.parent.remove(r.obj));
+  editor.pushHistory({
+    label: recs.length > 1 ? `Delete ${recs.length} objects` : 'Delete object',
+    undo: () => { recs.forEach((r) => r.parent.add(r.obj)); updateInfo(); },
+    redo: () => { editor.select(null); recs.forEach((r) => r.parent.remove(r.obj)); updateInfo(); },
+  });
+  updateInfo();
+  $('progMsg').textContent = recs.length > 1 ? `Deleted ${recs.length} objects · Ctrl+Z to undo` : `Deleted ${recs[0].obj.name} · Ctrl+Z to undo`;
+  return true;
 }
 var explodeK = 0;
 function setExplode(k) {
@@ -540,7 +636,7 @@ Object.assign(window.MeshForge, {
   exportScene: () => { const m = sceneIO.exportScene(); if (explodeK) m.objects.forEach((o) => { const x = sceneObjects().find((y) => y.userData.sceneId === o.id); if (x) o.position[2] = +(x.position.z - (x.userData.exz || 0)).toFixed(5); }); return m; },
   exportSceneBundle: exportBundle,
   exportSelectedGLB: () => editor.sel ? editor.encode('glb', editor.sel) : Promise.reject(new Error('Nothing selected')),
-  getObjects: () => sceneObjects().map((o) => ({ id: o.userData.sceneId ?? o.uuid, label: o.name, source: o.userData.source || '', visible: o.visible, selected: o === editor.sel,
+  getObjects: () => sceneObjects().map((o) => ({ id: o.userData.sceneId ?? o.uuid, label: o.name, source: o.userData.source || '', visible: o.visible, selected: editor.isSelected(o),
     position: o.position.toArray(), rotation: [o.rotation.x, o.rotation.y, o.rotation.z], scale: o.scale.toArray() })),
   selectObject: (id) => selectObject(id),
   getSelected: () => editor.sel ? (editor.sel.userData.sceneId ?? editor.sel.uuid) : null,
@@ -581,7 +677,78 @@ function addPrimitive(kind) {
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   applyShading(); updateInfo(); editor.select(mesh); return mesh;
 }
-Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addPrimitive('water'), matlib: () => mats.showLibrary(mats.libEl.hidden), shader: () => setWorkspace('shader'), uvws: () => setWorkspace('uv'), playgame: () => gameMode.togglePlay(), aiconsole: () => agentBridge.toggleConsole() });
+function refreshXform() {
+  const panel = $('xform'); if (!panel || !editor) return;
+  const show = editor.mode === 'object' && !!editor.sel && !land?.active && !document.body.classList.contains('mf-sim');
+  panel.hidden = !show;
+  if (!show) return;
+  const t = editor.getTransform();
+  if (!t) { panel.hidden = true; return; }
+  const spaceBtn = $('spaceBtn');
+  if (spaceBtn) spaceBtn.textContent = editor.getSpace() === 'local' ? 'Local' : 'Global';
+  const snap = editor.getSnap();
+  if ($('snapOn') && document.activeElement !== $('snapOn')) $('snapOn').checked = snap.on;
+  for (const row of panel.querySelectorAll('.xr')) {
+    row.querySelectorAll('input').forEach((inp) => {
+      if (document.activeElement === inp) return;
+      const v = t[row.dataset.ch][+inp.dataset.a];
+      inp.value = Number.isFinite(v) ? String(Math.round(v * 1000) / 1000) : '';
+    });
+  }
+  refreshBehaviours();
+}
+function refreshBehaviours() {
+  const host = $('behList'); if (!host || !editor?.sel) return;
+  if (host.contains(document.activeElement)) return;
+  const rows = listBehaviours(editor.sel);
+  host.innerHTML = rows.map((b, i) => {
+    const extra = b.type === 'script'
+      ? `<textarea data-i="${i}" data-k="source">${(b.params.source || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</textarea>`
+      : Object.entries(b.params).map(([k, v]) => `<label>${k}<input data-i="${i}" data-k="${k}" value="${String(v).replace(/"/g, '&quot;')}"></label>`).join('');
+    return `<div class="beh-row"><b>${b.type}</b><button type="button" class="rm" data-rm="${i}">×</button></div><div class="beh-row">${extra}</div>`;
+  }).join('') || '<div class="beh-row"><span>None. Play only runs behaviours you attach.</span></div>';
+  host.querySelectorAll('[data-rm]').forEach((btn) => { btn.onclick = () => mutateBehaviours(rows.filter((_, i) => i !== +btn.dataset.rm), 'Remove behaviour'); });
+  host.querySelectorAll('input[data-k], textarea[data-k]').forEach((inp) => {
+    inp.onchange = () => {
+      const next = listBehaviours(editor.sel).map((b) => ({ type: b.type, enabled: b.enabled !== false, params: { ...b.params } }));
+      const row = next[+inp.dataset.i]; if (!row) return;
+      const raw = inp.value;
+      row.params[inp.dataset.k] = inp.dataset.k === 'source' || Number.isNaN(+raw) || raw.trim() === '' ? raw : +raw;
+      mutateBehaviours(next, 'Edit behaviour');
+    };
+  });
+}
+function mutateBehaviours(next, label) {
+  const obj = editor.sel; if (!obj) return;
+  const prev = listBehaviours(obj).map((b) => ({ type: b.type, enabled: b.enabled, params: { ...b.params } }));
+  setBehaviours(obj, next);
+  editor.pushHistory({ label, undo: () => { setBehaviours(obj, prev); updateInfo(); }, redo: () => { setBehaviours(obj, next); updateInfo(); } });
+  updateInfo();
+}
+function bindXform() {
+  const panel = $('xform'); if (!panel || panel.dataset.bound) return; panel.dataset.bound = '1';
+  $('spaceBtn').onclick = () => { editor.setSpace(editor.getSpace() === 'local' ? 'world' : 'local'); refreshXform(); };
+  $('snapOn').onchange = () => editor.setSnap($('snapOn').checked, readSnapSteps());
+  ['snapMove', 'snapRot', 'snapScale'].forEach((id) => { $(id).onchange = () => editor.setSnap($('snapOn').checked, readSnapSteps()); });
+  panel.querySelectorAll('.xr input').forEach((inp) => {
+    inp.onchange = () => { editor.applyNumeric(inp.closest('.xr').dataset.ch, +inp.dataset.a, parseFloat(inp.value)); refreshXform(); };
+  });
+  panel.querySelectorAll('[data-align]').forEach((b) => { b.onclick = () => editor.align(b.dataset.align); });
+  $('groundBtn').onclick = () => editor.dropToGround();
+  const sel = $('behType');
+  sel.innerHTML = BEHAVIOUR_TYPES.map((t) => `<option value="${t.type}">${t.label}</option>`).join('');
+  $('behAdd').onclick = () => {
+    if (!editor.sel) return;
+    const type = sel.value;
+    const params = { ...(BEHAVIOUR_TYPES.find((t) => t.type === type)?.defaults || {}) };
+    mutateBehaviours([...listBehaviours(editor.sel), { type, enabled: true, params }], 'Add behaviour');
+  };
+}
+function readSnapSteps() {
+  return { move: parseFloat($('snapMove').value), rotate: parseFloat($('snapRot').value), scale: parseFloat($('snapScale').value) };
+}
+bindXform();
+Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addPrimitive('water'), matlib: () => mats.showLibrary(mats.libEl.hidden), shader: () => setWorkspace('shader'), uvws: () => setWorkspace('uv'), playgame: () => gameMode.togglePlay(), aiconsole: () => agentBridge.toggleConsole(), samplekiosk: () => loadKioskSample() });
 document.querySelectorAll('.menu [data-act]').forEach((b) => b.onclick = () => { document.activeElement?.blur(); ACTIONS[b.dataset.act]?.(); });
 // scene.json: persist the material library and per-object slots; honour room.camera
 const _exportScene = window.MeshForge.exportScene;
@@ -609,6 +776,11 @@ Object.assign(window.MeshForge, {
   },
   addSky: () => addPrimitive('sky').name, addWater: () => addPrimitive('water').name, offline: () => !!state.offline,
   auth, agent: agentBridge, companion, game: gameMode, anim: animTimeline,
+  loadSample: (name = 'kiosk') => (name === 'kiosk' ? loadKioskSample() : null),
+  getSelection: () => editor.selection().map((o) => ({ id: o.userData.sceneId ?? o.uuid, name: o.name })),
+  setBehaviours: (id, list) => { const o = findObject(id); if (!o) return false; setBehaviours(o, list); updateInfo(); return true; },
+  getBehaviours: (id) => { const o = findObject(id); return o ? listBehaviours(o) : null; },
+  applyNumeric: (ch, axis, value) => editor.applyNumeric(ch, axis, value),
 });
 Object.defineProperty(window.MeshForge, 'shading', { get: () => state.shading, configurable: true }); Object.defineProperty(window.MeshForge, 'workspace', { get: () => curWS, configurable: true });
 window.__meshforge.mats = mats; window.__meshforge.setShading = setShading; window.__meshforge.setWorkspace = setWorkspace; window.__meshforge.addPrimitive = addPrimitive; window.__meshforge.sceneObjects = sceneObjects;

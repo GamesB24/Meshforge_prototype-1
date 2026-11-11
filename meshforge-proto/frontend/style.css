@@ -96,7 +96,7 @@ body.sculpt #c{cursor:crosshair}
 .outliner .ohead{display:flex;align-items:center;gap:4px;padding:4px 6px;border-bottom:1px solid #444}.outliner .grow{flex:1}
 .outliner button{background:#333;border:1px solid #555;color:#ddd;border-radius:3px;cursor:pointer;padding:1px 5px}
 .outliner ul{list-style:none;margin:0;padding:2px 0;overflow:auto}
-.outliner li{display:flex;align-items:center;gap:5px;padding:2px 6px;cursor:pointer}.outliner li:hover{background:#333}.outliner li.sel{background:#5a3d1a;color:#fff}
+.outliner li{display:flex;align-items:center;gap:5px;padding:2px 6px;cursor:pointer}.outliner li:hover{background:#333}.outliner li.sel{background:#5a3d1a;color:#fff}.outliner li.active{box-shadow:inset 2px 0 0 #ff9a2e}
 .outliner li .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.outliner li.hid .lbl{opacity:.45}
 .outliner .eye{border:none;background:none;padding:0 2px}.outliner .badge{font-size:9px;padding:0 4px;border-radius:6px;background:#3d4a5c;color:#cfe}
 .outliner .oexp{display:flex;gap:6px;align-items:center;padding:4px 6px;border-top:1px solid #444}.outliner .oexp input{flex:1}
@@ -223,3 +223,26 @@ body.in-game #c{cursor:crosshair}
 #tlDopesheetCanvas{display:block;width:100%;height:100%}
 .anim-playhead{position:absolute;top:0;bottom:0;width:2px;background:#e06c75;pointer-events:none}
 .anim-playhead::before{content:"▼";position:absolute;top:-2px;left:-4px;color:#e06c75;font-size:10px}
+
+/* Object-mode transform panel and scene play transport */
+.play-transport{display:flex;align-items:center;gap:3px;margin-right:6px}
+.play-transport .game-btn{min-width:26px;justify-content:center;padding:3px 7px}
+.play-transport .game-btn.alt{background:#3a4454}
+.play-transport .game-btn.stop{background:#8d3a3a}
+.play-transport .game-btn.on{outline:2px solid #d7ffd7}
+#playState{font-size:11px;color:#b7d7b7;min-width:72px}
+body.mf-sim #c{box-shadow:inset 0 0 0 2px #2e7d32}
+.xform{position:absolute;top:36px;left:8px;width:248px;background:#232323ee;border:1px solid #444;border-radius:4px;z-index:4;padding:6px 8px;font-size:11px;color:#ddd}
+.xform .xh,.xform .xr,.xform .xtools,.xform .xsteps{display:flex;align-items:center;gap:4px;margin:3px 0}
+.xform .xh b{flex:1}
+.xform .xr span,.xform .xtools span,.xform .xsteps span{width:58px;color:#aaa}
+.xform input[type=number]{width:52px;background:#1b1b1b;color:#eee;border:1px solid #555;border-radius:3px;padding:2px}
+.xform button,.xform select{background:#333;color:#eee;border:1px solid #555;border-radius:3px;cursor:pointer;padding:1px 6px}
+.xform .snap{display:flex;align-items:center;gap:3px;color:#ccc}
+.beh-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0}
+.xform .beh-row input,.xform .beh-row textarea,.xform .beh-row select{background:#1b1b1b;color:#eee;border:1px solid #555;border-radius:3px}
+.xform .beh-row input{width:64px}
+.xform .beh-row label{display:inline-flex;gap:3px;align-items:center;color:#aaa}
+.beh-row textarea{width:100%;min-height:48px;font:11px/1.3 monospace}
+.beh-row .rm{margin-left:auto}
+body.mf-sim .xform{display:none}

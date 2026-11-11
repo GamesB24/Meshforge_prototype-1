@@ -147,9 +147,12 @@ export function createAgentBridge(ctx) {
       mesh.userData.isPrimitive = true;
       mesh.userData.mf = { slots: ['default'], active: 0, albedo: 'material', vcol: false };
 
-      const root = getModel() || scene;
-      root.add(mesh);
-      editor.select(mesh);
+      if (ctx.addObject) ctx.addObject(mesh, { id: mesh.name, label: mesh.name, source: 'primitive' });
+      else {
+        const root = getModel() || scene;
+        root.add(mesh);
+        editor.select(mesh);
+      }
       status(`Spawned ${mesh.name}`);
       return { ok: true, object_id: mesh.uuid, name: mesh.name };
     },
@@ -336,7 +339,7 @@ export function createAgentBridge(ctx) {
     // 2. Procedural level generation
     if (lower.includes('generate level') || lower.includes('new arena') || lower.includes('create game') || lower.includes('make a level')) {
       await executeTool('generate_level', { theme: 'Sci-Fi Arena', obstacles: 10 });
-      addChatMessage('bot', 'Constructed a new battle arena! Press Play to enter.');
+      addChatMessage('bot', 'Built that layout into the current scene. Press Play to run the scene.');
       return;
     }
 
