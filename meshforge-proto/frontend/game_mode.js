@@ -1,383 +1,409 @@
-// MeshForge In-Engine Game Mode (Play-In-Editor / PIE)
-// Provides a real-time playable game inside the viewport with player physics, shooting, and metaverse kiosk.
+// MeshForge play runtime. Runs the user's current scene: timeline keys, glTF clips and behaviours.
+// Stop restores every content object's transform, visibility and colour, and drops objects spawned during play.
+// Original MIT code. The old built-in shooter / kiosk / drone launch has been removed from this path.
 import * as THREE from 'three';
+import { listBehaviours } from './behaviours.js';
+
+const _fwd = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _move = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
 
 export function createGameMode(ctx) {
-  const { scene, canvas, camera, controls, auth, companion, status } = ctx;
+  const { scene, canvas, camera, controls, status, getModel, editor, anim, isLandscape } = ctx;
 
   const S = {
-    playing: false,
-    player: null,
-    playerCam: null,
-    kiosk: null,
-    savedCamPos: new THREE.Vector3(),
-    savedCamTarget: new THREE.Vector3(),
-    keys: { w: false, a: false, s: false, d: false, space: false, shift: false },
-    velocity: new THREE.Vector3(),
-    onGround: true,
-    yaw: 0,
-    pitch: 0,
-    mouseLocked: false,
-    projectiles: [],
-    nearKiosk: false,
+    state: 'edit', // edit | play | pause
+    snapshot: null,
+    time: 0,
+    keys: {},
+    following: false,
+    mixer: null,
+    scriptErrors: new Set(),
   };
 
-  // Build Player Rig
-  function buildPlayer() {
-    const group = new THREE.Group();
-    group.name = 'Player_Rig';
+  function contentRoot() {
+    return getModel?.() || null;
+  }
 
-    // Stylized Character Capsule
-    const bodyGeo = new THREE.CapsuleGeometry(0.35, 0.9, 8, 16);
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x3d5afe,
-      metalness: 0.6,
-      roughness: 0.4,
+  function eachContent(fn) {
+    const root = contentRoot();
+    if (!root) return;
+    root.traverse((o) => {
+      if (o.isMesh && !o.userData.isOverlay && !o.userData.isSelection) fn(o);
     });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = 0.8;
-    body.castShadow = true;
-    group.add(body);
-
-    // Visor / Faceplate
-    const visorGeo = new THREE.BoxGeometry(0.3, 0.12, 0.2);
-    const visorMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
-    const visor = new THREE.Mesh(visorGeo, visorMat);
-    visor.position.set(0, 1.15, 0.25);
-    group.add(visor);
-
-    // Energy Blaster / Tool in hand
-    const blasterGeo = new THREE.BoxGeometry(0.12, 0.15, 0.45);
-    const blasterMat = new THREE.MeshStandardMaterial({ color: 0x212121, metalness: 0.8 });
-    const blaster = new THREE.Mesh(blasterGeo, blasterMat);
-    blaster.position.set(0.45, 0.75, 0.3);
-    group.add(blaster);
-
-    group.position.set(0, 0, 0);
-    scene.add(group);
-    return group;
   }
 
-  // Build Metaverse Kiosk / Street Cafe
-  function buildKiosk() {
-    const group = new THREE.Group();
-    group.name = 'Metaverse_Kiosk';
-
-    // Kiosk Booth Base
-    const baseGeo = new THREE.CylinderGeometry(1.6, 1.8, 1.0, 16);
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x263238, roughness: 0.5 });
-    const base = new THREE.Mesh(baseGeo, baseMat);
-    base.position.y = 0.5;
-    group.add(base);
-
-    // Counter Top
-    const counterGeo = new THREE.CylinderGeometry(1.9, 1.9, 0.15, 16);
-    const counterMat = new THREE.MeshStandardMaterial({ color: 0xe8963a, metalness: 0.7, roughness: 0.2 });
-    const counter = new THREE.Mesh(counterGeo, counterMat);
-    counter.position.y = 1.05;
-    group.add(counter);
-
-    // Holographic Canopy
-    const canopyGeo = new THREE.ConeGeometry(2.0, 0.8, 16);
-    const canopyMat = new THREE.MeshStandardMaterial({ color: 0x1e88e5, transparent: true, opacity: 0.7 });
-    const canopy = new THREE.Mesh(canopyGeo, canopyMat);
-    canopy.position.y = 2.8;
-    group.add(canopy);
-
-    // Kiosk Bot / Attendant
-    const botGeo = new THREE.SphereGeometry(0.35, 16, 16);
-    const botMat = new THREE.MeshStandardMaterial({ color: 0xffb74d, metalness: 0.8 });
-    const bot = new THREE.Mesh(botGeo, botMat);
-    bot.position.set(0, 1.6, 0);
-    group.add(bot);
-
-    // Glowing Sign
-    const signGeo = new THREE.BoxGeometry(1.2, 0.3, 0.05);
-    const signMat = new THREE.MeshBasicMaterial({ color: 0x00e676 });
-    const sign = new THREE.Mesh(signGeo, signMat);
-    sign.position.set(0, 2.2, 1.2);
-    group.add(sign);
-
-    group.position.set(6, 0, -4);
-    group.visible = false; // Hidden in DCC Editor; only visible when Play button is pressed
-    scene.add(group);
-    return group;
+  function findByName(name) {
+    if (!name) return null;
+    let found = null;
+    eachContent((o) => { if (!found && o.name === name) found = o; });
+    return found;
   }
 
-  // Shoot Energy Projectile
-  function shootProjectile() {
-    if (!S.playing || !S.player) return;
-
-    const projGeo = new THREE.SphereGeometry(0.1, 8, 8);
-    const projMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
-    const proj = new THREE.Mesh(projGeo, projMat);
-
-    const spawnPos = new THREE.Vector3(0.45, 0.75, 0.5).applyQuaternion(S.player.quaternion).add(S.player.position);
-    proj.position.copy(spawnPos);
-
-    const fwd = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(S.pitch, S.yaw, 0, 'YXZ')).normalize();
-    proj.userData = { velocity: fwd.multiplyScalar(28.0), life: 2.0 };
-
-    scene.add(proj);
-    S.projectiles.push(proj);
-  }
-
-  // Pointer lock mouse look
-  function onMouseMove(e) {
-    if (!S.playing || !S.mouseLocked) return;
-    const sensitivity = 0.0022;
-    S.yaw -= e.movementX * sensitivity;
-    S.pitch -= e.movementY * sensitivity;
-    S.pitch = Math.max(-Math.PI / 2.3, Math.min(Math.PI / 2.3, S.pitch));
-  }
-
-  // Enter Play Mode (ONLY called when user clicks ▶ Play or Alt+P)
-  function startPlay() {
-    if (S.playing) return;
-    S.playing = true;
-
-    // Save DCC editor camera
-    const cam = camera();
-    S.savedCamPos.copy(cam.position);
-    S.savedCamTarget.copy(controls.target);
-    controls.enabled = false;
-
-    // Reveal player & kiosk
-    if (!S.player) S.player = buildPlayer();
-    S.player.visible = true;
-
-    if (!S.kiosk) S.kiosk = buildKiosk();
-    S.kiosk.visible = true;
-
-    // Wake companion bot
-    companion?.setActive(true);
-
-    // Reset player position
-    S.player.position.set(0, 0, 0);
-    S.velocity.set(0, 0, 0);
-    S.yaw = 0;
-    S.pitch = 0;
-
-    // UI Updates
-    document.body.classList.add('in-game');
-    updateHUD(true);
-    status('🎮 Play Mode: WASD move · Mouse aim · Click shoot · Esc exit');
-
-    canvas.requestPointerLock();
-  }
-
-  // Exit Play Mode (Return to 100% quiet DCC Editor)
-  function stopPlay() {
-    if (!S.playing) return;
-    S.playing = false;
-
-    document.exitPointerLock?.();
-    if (S.player) S.player.visible = false;
-    if (S.kiosk) S.kiosk.visible = false;
-    companion?.setActive(false); // Companion goes completely dormant and silent
-
-    // Restore DCC editor camera
-    const cam = camera();
-    cam.position.copy(S.savedCamPos);
-    controls.target.copy(S.savedCamTarget);
-    controls.enabled = true;
-
-    document.body.classList.remove('in-game');
-    updateHUD(false);
-    status('Returned to DCC Editor.');
-  }
-
-  // Toggle Play
-  function togglePlay() {
-    if (S.playing) stopPlay();
-    else startPlay();
-  }
-
-  // Input listeners: Only activate on explicit Alt+P or button click
-  window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyP' && e.altKey) {
-      e.preventDefault();
-      togglePlay();
-      return;
-    }
-    if (!S.playing) return;
-    if (e.code === 'KeyW') S.keys.w = true;
-    if (e.code === 'KeyA') S.keys.a = true;
-    if (e.code === 'KeyS') S.keys.s = true;
-    if (e.code === 'KeyD') S.keys.d = true;
-    if (e.code === 'Space') S.keys.space = true;
-    if (e.code === 'ShiftLeft') S.keys.shift = true;
-    if (e.code === 'Escape') stopPlay();
-    if (e.code === 'KeyE' && S.nearKiosk) {
-      interactKiosk();
-    }
-  });
-
-  window.addEventListener('keyup', (e) => {
-    if (!S.playing) return;
-    if (e.code === 'KeyW') S.keys.w = false;
-    if (e.code === 'KeyA') S.keys.a = false;
-    if (e.code === 'KeyS') S.keys.s = false;
-    if (e.code === 'KeyD') S.keys.d = false;
-    if (e.code === 'Space') S.keys.space = false;
-    if (e.code === 'ShiftLeft') S.keys.shift = false;
-  });
-
-  canvas.addEventListener('mousedown', (e) => {
-    if (!S.playing) return;
-    if (!S.mouseLocked) {
-      canvas.requestPointerLock();
-    } else if (e.button === 0) {
-      shootProjectile();
-    }
-  });
-
-  document.addEventListener('pointerlockchange', () => {
-    S.mouseLocked = document.pointerLockElement === canvas;
-  });
-
-  window.addEventListener('mousemove', onMouseMove);
-
-  // Kiosk Interaction Modal
-  async function interactKiosk() {
-    const user = auth?.getUser() || { name: 'Creator', wallet_credits: 500 };
-    companion?.showBubble('Welcome to the Metaverse Kiosk! Transferring credits to your Google Agent...', 'happy');
-    
-    // Simulate immediate metaverse transaction
-    try {
-      const tx = await auth?.wallet?.transact({
-        action: 'transfer',
-        amount: 50,
-        reason: 'Cafe Kiosk Coffee & Agent Boost',
-        targetAgent: 'Google Assistant / Agent Wallet',
+  function capture() {
+    const objects = [];
+    eachContent((o) => {
+      const col = o.material && !Array.isArray(o.material) && o.material.color ? o.material.color.getHex() : null;
+      objects.push({
+        uuid: o.uuid,
+        object: o,
+        parent: o.parent,
+        position: o.position.clone(),
+        quaternion: o.quaternion.clone(),
+        scale: o.scale.clone(),
+        visible: o.visible,
+        color: col,
       });
-      status(`Kiosk transaction approved! 50 Credits transferred to Google Agent. Balance: ${tx?.new_balance || user.wallet_credits}`);
-    } catch (err) {
-      status('Kiosk error: ' + err.message);
-    }
-  }
-
-  // Create In-Game HUD Elements
-  function createHUD() {
-    let hud = document.getElementById('gameHUD');
-    if (hud) return hud;
-
-    hud = document.createElement('div');
-    hud.id = 'gameHUD';
-    hud.className = 'game-hud hidden';
-    hud.innerHTML = `
-      <div class="hud-crosshair">+</div>
-      <div class="hud-top">
-        <div class="hud-chip"><b>Player:</b> <span id="hudPlayerName">Creator</span></div>
-        <div class="hud-chip"><b>Credits:</b> <span id="hudCredits">1,000</span></div>
-        <button id="hudExitBtn" class="hud-exit" title="Exit to DCC Editor (Esc)">✕ Exit Game</button>
-      </div>
-      <div id="hudKioskPrompt" class="hud-prompt hidden">[E] Interact with Shopkeeper Bot</div>
-      <div class="hud-bottom">
-        <div class="hud-bar"><span class="hud-bar-fill" style="width: 100%"></span></div>
-        <div class="hud-hint">WASD move · Space jump · Click shoot · V voice · E interact · Esc DCC</div>
-      </div>
-    `;
-    document.body.appendChild(hud);
-    hud.querySelector('#hudExitBtn').onclick = () => stopPlay();
-    return hud;
-  }
-
-  function updateHUD(visible) {
-    const hud = createHUD();
-    hud.classList.toggle('hidden', !visible);
-    if (visible && auth) {
-      const u = auth.getUser();
-      hud.querySelector('#hudPlayerName').textContent = u.name;
-      hud.querySelector('#hudCredits').textContent = `${u.wallet_credits} Credits`;
-    }
-  }
-
-  // Per-Frame Game Physics & Render Tick
-  function tick(delta = 0.016) {
-    if (!S.playing || !S.player) return;
-
-    // Movement Physics
-    const speed = S.keys.shift ? 10.0 : 5.5;
-    const moveDir = new THREE.Vector3();
-
-    if (S.keys.w) moveDir.z -= 1;
-    if (S.keys.s) moveDir.z += 1;
-    if (S.keys.a) moveDir.x -= 1;
-    if (S.keys.d) moveDir.x += 1;
-    moveDir.normalize();
-
-    // Rotate movement by yaw
-    moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), S.yaw);
-
-    // Horizontal velocity
-    S.velocity.x = moveDir.x * speed;
-    S.velocity.z = moveDir.z * speed;
-
-    // Jumping & Gravity
-    if (S.keys.space && S.onGround) {
-      S.velocity.y = 7.5;
-      S.onGround = false;
-    }
-    S.velocity.y -= 19.6 * delta; // Gravity
-
-    // Update position
-    S.player.position.addScaledVector(S.velocity, delta);
-
-    // Floor collision
-    if (S.player.position.y <= 0) {
-      S.player.position.y = 0;
-      S.velocity.y = 0;
-      S.onGround = true;
-    }
-
-    // Orient player mesh towards horizontal look yaw
-    S.player.rotation.y = S.yaw;
-
-    // Third-person camera follow
+    });
     const cam = camera();
-    const camOffset = new THREE.Vector3(0, 1.8, 3.2).applyEuler(new THREE.Euler(S.pitch, S.yaw, 0, 'YXZ'));
-    const targetCamPos = S.player.position.clone().add(camOffset);
-    cam.position.copy(targetCamPos);
+    return {
+      objects,
+      ids: new Set(objects.map((o) => o.uuid)),
+      camPos: cam.position.clone(),
+      camTarget: controls.target.clone(),
+      frame: anim?.getFrame?.() ?? 0,
+    };
+  }
 
-    // Look at player head
-    const lookTarget = S.player.position.clone().add(new THREE.Vector3(0, 1.3, 0));
-    cam.lookAt(lookTarget);
+  function clearRuntimeTemps() {
+    eachContent((o) => {
+      for (const b of o.userData.behaviours || []) {
+        delete b._base; delete b._ground; delete b._vy; delete b._facing; delete b._fn; delete b._err;
+      }
+    });
+    S.scriptErrors.clear();
+  }
 
-    // Update Companion
-    if (companion) {
-      const fwd = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(0, S.yaw, 0));
-      companion.tick(delta, { position: S.player.position, forward: fwd });
+  function restore(snap) {
+    if (!snap) return;
+    const root = contentRoot();
+    if (root) {
+      const extra = [];
+      root.traverse((o) => {
+        if (o !== root && o.parent === root && !o.userData.isOverlay && !snap.ids.has(o.uuid) && (o.isMesh || o.isGroup)) extra.push(o);
+      });
+      extra.forEach((o) => o.parent.remove(o));
     }
-
-    // Check distance to Kiosk
-    if (S.kiosk) {
-      const d = S.player.position.distanceTo(S.kiosk.position);
-      const prompt = document.getElementById('hudKioskPrompt');
-      S.nearKiosk = d < 3.2;
-      if (prompt) prompt.classList.toggle('hidden', !S.nearKiosk);
+    for (const rec of snap.objects) {
+      const o = rec.object;
+      if (!o.parent && rec.parent) rec.parent.add(o);
+      o.position.copy(rec.position);
+      o.quaternion.copy(rec.quaternion);
+      o.scale.copy(rec.scale);
+      o.visible = rec.visible;
+      if (rec.color != null && o.material && !Array.isArray(o.material) && o.material.color) o.material.color.setHex(rec.color);
+      o.updateMatrixWorld(true);
     }
+    const cam = camera();
+    cam.position.copy(snap.camPos);
+    controls.target.copy(snap.camTarget);
+    cam.lookAt(controls.target);
+    controls.enabled = true;
+    controls.update();
+  }
 
-    // Update Projectiles
-    for (let i = S.projectiles.length - 1; i >= 0; i--) {
-      const p = S.projectiles[i];
-      p.position.addScaledVector(p.userData.velocity, delta);
-      p.userData.life -= delta;
-      if (p.userData.life <= 0) {
-        scene.remove(p);
-        S.projectiles.splice(i, 1);
+  function stopClips() {
+    if (S.mixer) { S.mixer.stopAllAction(); S.mixer = null; }
+  }
+
+  function startClips() {
+    stopClips();
+    const root = contentRoot();
+    if (!root) return;
+    const keyed = new Set(anim?.keyedNames?.() || []);
+    const found = [];
+    const take = (clips) => { for (const c of clips || []) if (c?.tracks?.length) found.push(c); };
+    take(root.animations);
+    root.traverse((o) => take(o.animations));
+    if (!found.length) return;
+    S.mixer = new THREE.AnimationMixer(root);
+    for (const clip of found) {
+      const tracks = clip.tracks.filter((t) => !keyed.has(String(t.name).split('.')[0]));
+      if (!tracks.length) continue;
+      const sub = new THREE.AnimationClip(clip.name || 'clip', clip.duration, tracks);
+      S.mixer.clipAction(sub, root).play();
+    }
+  }
+
+  function armBehaviours() {
+    eachContent((o) => {
+      for (const b of listBehaviours(o)) {
+        const live = (o.userData.behaviours || []).find((x) => x.type === b.type) || b;
+        if (live.type === 'oscillate') live._base = o.position.clone();
+        if (live.type === 'character') { live._ground = o.position.y; live._vy = 0; delete live._facing; }
+      }
+    });
+  }
+
+  function runScript(obj, beh, dt) {
+    const source = String(beh.params?.source || '');
+    if (!source.trim()) return;
+    if (!beh._fn) {
+      try { beh._fn = new Function('api', '"use strict";\n' + source); }
+      catch (err) {
+        if (!beh._err) { beh._err = true; status(`Script on ${obj.name} failed to parse: ${err.message}`); }
+        return;
       }
     }
+    const api = {
+      dt,
+      time: S.time,
+      name: obj.name,
+      position: obj.position,
+      rotation: obj.rotation,
+      scale: obj.scale,
+      object: obj,
+      get: (name) => findByName(name),
+      key: (code) => !!S.keys[code],
+    };
+    try { beh._fn(api); }
+    catch (err) {
+      const id = obj.uuid + source;
+      if (!S.scriptErrors.has(id)) { S.scriptErrors.add(id); status(`Script on ${obj.name}: ${err.message}`); }
+    }
   }
 
-  createHUD();
+  function stepCharacter(obj, beh, dt) {
+    const p = beh.params || {};
+    const speed = (S.keys.ShiftLeft || S.keys.ShiftRight ? 1.8 : 1) * (p.speed ?? 4.5);
+    const cam = camera();
+    cam.getWorldDirection(_fwd);
+    _fwd.y = 0;
+    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
+    _fwd.normalize();
+    _right.crossVectors(_fwd, _up).normalize();
+    _move.set(0, 0, 0);
+    if (S.keys.KeyW) _move.add(_fwd);
+    if (S.keys.KeyS) _move.sub(_fwd);
+    if (S.keys.KeyD) _move.add(_right);
+    if (S.keys.KeyA) _move.sub(_right);
+    if (_move.lengthSq() > 0) {
+      _move.normalize().multiplyScalar(speed * dt);
+      const parent = obj.parent;
+      const world = obj.getWorldPosition(new THREE.Vector3()).add(_move);
+      if (parent) obj.position.copy(parent.worldToLocal(world));
+      else obj.position.copy(world);
+      if (!beh._facing) beh._facing = new THREE.Vector3();
+      beh._facing.set(_move.x, 0, _move.z);
+      if (beh._facing.lengthSq() > 1e-8) {
+        beh._facing.normalize();
+        obj.rotation.y = Math.atan2(beh._facing.x, beh._facing.z);
+      }
+    }
+    if (S.keys.Space && beh._vy === 0 && obj.position.y <= beh._ground + 0.02) beh._vy = p.jump ?? 6;
+    beh._vy -= 18 * dt;
+    obj.position.y += beh._vy * dt;
+    if (obj.position.y <= beh._ground) { obj.position.y = beh._ground; beh._vy = 0; }
+    if (p.camera === 'follow') {
+      S.following = true;
+      const facing = beh._facing && beh._facing.lengthSq() > 0 ? beh._facing : _fwd;
+      const worldPos = obj.getWorldPosition(new THREE.Vector3());
+      cam.position.copy(worldPos).addScaledVector(facing, -3.2);
+      cam.position.y = worldPos.y + 1.7;
+      controls.target.copy(worldPos).add(new THREE.Vector3(0, 0.9, 0));
+      cam.lookAt(controls.target);
+    }
+  }
+
+  function stepFollow(obj, beh, dt) {
+    const p = beh.params || {};
+    const target = findByName(p.target);
+    if (!target) return;
+    const offset = obj.position.clone().sub(target.position);
+    offset.y = 0;
+    if (offset.lengthSq() < 1e-4) offset.set(1, 0, 0);
+    offset.setLength(p.distance ?? 1.6);
+    const goal = target.position.clone().add(offset);
+    goal.y = target.position.y + (p.height ?? 1.4);
+    obj.position.lerp(goal, Math.min(1, dt * 3));
+    obj.lookAt(target.position.x, obj.position.y, target.position.z);
+  }
+
+  function tickBehaviours(dt) {
+    S.following = false;
+    eachContent((obj) => {
+      for (const beh of obj.userData.behaviours || []) {
+        if (beh.enabled === false) continue;
+        const p = beh.params || {};
+        if (beh.type === 'spin') {
+          const axis = p.axis === 'x' || p.axis === 'z' ? p.axis : 'y';
+          obj.rotation[axis] += THREE.MathUtils.degToRad(p.speed ?? 90) * dt;
+        } else if (beh.type === 'oscillate') {
+          if (!beh._base) beh._base = obj.position.clone();
+          const axis = p.axis === 'x' || p.axis === 'z' ? p.axis : 'y';
+          obj.position[axis] = beh._base[axis] + Math.sin(S.time * (p.speed ?? 2)) * (p.amplitude ?? 0.25);
+        } else if (beh.type === 'character') stepCharacter(obj, beh, dt);
+        else if (beh.type === 'follow') stepFollow(obj, beh, dt);
+        else if (beh.type === 'script') runScript(obj, beh, dt);
+      }
+    });
+    controls.enabled = !(S.state === 'play' && S.following);
+  }
+
+  function behaviourCount() {
+    let n = 0;
+    eachContent((o) => { n += (o.userData.behaviours || []).filter((b) => b.enabled !== false).length; });
+    return n;
+  }
+
+  function objectCount() {
+    let n = 0;
+    eachContent(() => { n += 1; });
+    return n;
+  }
+
+  function setBody(on) {
+    document.body.classList.toggle('mf-sim', on);
+    const label = document.getElementById('playState');
+    if (label) label.textContent = S.state === 'play' ? 'Playing' : S.state === 'pause' ? 'Paused' : 'Edit';
+    document.getElementById('btnPlayGame')?.classList.toggle('on', S.state === 'play');
+    document.getElementById('btnPauseGame')?.classList.toggle('on', S.state === 'pause');
+  }
+
+  function beginSession() {
+    S.snapshot = capture();
+    S.time = 0;
+    S.scriptErrors.clear();
+    clearRuntimeTemps();
+    editor?.setPlaybackLocked?.(true);
+    anim?.pause?.();
+    anim?.setFrame?.(anim.getFrame?.() ?? 0);
+    armBehaviours();
+    anim?.play?.();
+    startClips();
+    const n = objectCount();
+    const b = behaviourCount();
+    status(`Playing the current scene · ${n} object${n === 1 ? '' : 's'} · ${b} behaviour${b === 1 ? '' : 's'}`);
+  }
+
+  function startPlay(fromStart = false) {
+    if (isLandscape?.()) { status('Play runs the main scene. Leave the Landscape workspace first.'); return false; }
+    if (editor?.mode && editor.mode !== 'object') { status('Switch to Object Mode before Play.'); return false; }
+    if (S.state === 'pause') return resume();
+    if (S.state === 'play') return true;
+    if (!contentRoot()) { status('Nothing in the scene yet. Add or generate objects, then press Play.'); return false; }
+    if (fromStart) anim?.setFrame?.(anim.getStartFrame?.() ?? 0, { apply: false });
+    beginSession();
+    S.state = 'play';
+    setBody(true);
+    return true;
+  }
+
+  function resume() {
+    if (S.state !== 'pause') return false;
+    S.state = 'play';
+    anim?.play?.();
+    controls.enabled = !S.following;
+    setBody(true);
+    status('Resumed');
+    return true;
+  }
+
+  function pausePlay() {
+    if (S.state !== 'play') return false;
+    S.state = 'pause';
+    anim?.pause?.();
+    controls.enabled = true;
+    setBody(true);
+    status('Paused · Stop restores the scene to the moment before Play');
+    return true;
+  }
+
+  function stopPlay() {
+    if (S.state === 'edit') return false;
+    stopClips();
+    anim?.pause?.();
+    const frame = S.snapshot?.frame ?? 0;
+    anim?.setFrame?.(frame, { apply: false });
+    restore(S.snapshot);
+    clearRuntimeTemps();
+    S.snapshot = null;
+    S.time = 0;
+    S.state = 'edit';
+    S.following = false;
+    editor?.setPlaybackLocked?.(false);
+    setBody(false);
+    status('Stopped. Scene restored to its pre-play state.');
+    return true;
+  }
+
+  function restart() {
+    if (S.state === 'edit') return startPlay(true);
+    if (!S.snapshot) return startPlay();
+    stopClips();
+    anim?.pause?.();
+    const snap = S.snapshot;
+    anim?.setFrame?.(anim.getStartFrame?.() ?? 0, { apply: false });
+    restore(snap);
+    clearRuntimeTemps();
+    S.snapshot = snap;
+    S.time = 0;
+    anim?.setFrame?.(anim.getStartFrame?.() ?? 0);
+    armBehaviours();
+    anim?.play?.();
+    startClips();
+    S.state = 'play';
+    setBody(true);
+    status('Restarted from the start of the timeline');
+    return true;
+  }
+
+  function togglePlay() {
+    if (S.state === 'play') return pausePlay();
+    return startPlay();
+  }
+
+  function handleKey(e) {
+    if (e.code === 'KeyP' && e.altKey && !e.repeat) { e.preventDefault(); togglePlay(); return true; }
+    if (!isActive()) return false;
+    if (e.code === 'Escape') { e.preventDefault(); stopPlay(); return true; }
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code)) {
+      S.keys[e.code] = true;
+      e.preventDefault();
+      return true;
+    }
+    if (['KeyG', 'KeyR', 'Delete', 'Tab'].includes(e.code)) { e.preventDefault(); return true; }
+    return false;
+  }
+
+  window.addEventListener('keyup', (e) => { S.keys[e.code] = false; });
+  canvas.addEventListener('mousedown', (e) => { if (isActive()) e.stopPropagation(); }, true);
+
+  function tick(delta = 0.016) {
+    if (S.state !== 'play') return;
+    const dt = Math.min(Math.max(delta, 0), 0.05);
+    S.time += dt;
+    anim?.tick?.(dt);
+    if (S.mixer) S.mixer.update(dt);
+    tickBehaviours(dt);
+    const label = document.getElementById('playState');
+    if (label) label.textContent = `Playing ${S.time.toFixed(1)}s`;
+  }
+
+  function allowsOrbit() { return S.state !== 'play' || !S.following; }
+
+  function isActive() { return S.state === 'play' || S.state === 'pause'; }
+  function isPlaying() { return isActive(); }
+  function isSimulating() { return S.state === 'play'; }
 
   return {
     startPlay,
     stopPlay,
+    pausePlay,
+    resume,
+    restart,
     togglePlay,
-    isPlaying: () => S.playing,
-    getPlayerPosition: () => S.player ? S.player.position.clone() : new THREE.Vector3(),
+    handleKey,
     tick,
+    isPlaying,
+    isActive,
+    isSimulating,
+    allowsOrbit,
+    getState: () => S.state,
+    getPlayerPosition() {
+      const player = findByName('Player');
+      return player ? player.position.clone() : camera().position.clone();
+    },
   };
 }

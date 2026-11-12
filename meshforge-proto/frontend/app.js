@@ -16,6 +16,9 @@ import { createAgentBridge } from './agent_bridge.js';
 import { createCompanion } from './companion.js';
 import { createGameMode } from './game_mode.js';
 import { createAnimationTimeline } from './animation_timeline.js';
+import { buildKioskSample } from './sample_scene.js';
+import { BEHAVIOUR_TYPES, listBehaviours, setBehaviours } from './behaviours.js';
+import { createProject } from './project.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -129,9 +132,10 @@ function frameModel() {
 let viewLabel = 'User Perspective';
 function updateInfo() {
   refreshOutliner?.();
+  refreshXform?.();
   if (land?.active) return;
   let tris = 0; model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay) tris += Math.min(o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count, o.geometry.drawRange.count) / 3; });
-  const objs = model ? model.children.filter((o) => o.isMesh || o.children.length).length || 1 : 0;
+  const objs = model ? contentList(model, 0, []).filter((x) => x.obj.isMesh).length : 0;
   if (model?.userData.isScene) model.children.forEach((o) => { // Sculpt drops vertex colours: fall back to the object's average colour
     const m = o.userData.orig || o.material; if (!o.isMesh || !m || o.geometry.attributes.color || !m.vertexColors) return;
     m.vertexColors = false; if (o.userData.avgColor != null && m.color) m.color.setHex(o.userData.avgColor); m.needsUpdate = true; });
@@ -140,8 +144,10 @@ function updateInfo() {
 
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (gameMode?.handleKey?.(e)) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); project?.save(); return; }
   if (sculpt?.active && sculpt.handleKey(e)) return;
-  if (!land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
+  if (!gameMode?.isActive?.() && !land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
     if (e.key === 'Delete') { if (editor.sel) { e.preventDefault(); deleteObject(); return; } }
     if (e.shiftKey && (e.key === 'D' || e.key === 'd')) { if (editor.sel) { e.preventDefault(); duplicateObject(); return; } }
   }
@@ -187,7 +193,7 @@ document.querySelectorAll('.tool[data-tool]').forEach((b) => b.onclick = () => s
 editor = createEditor({
   scene, controls, canvas, renderer, camera: () => camera, getModel: () => (land?.active ? null : model), jobId: () => state.current, updateInfo: () => updateInfo(),
   status: (m) => { $('progMsg').textContent = m; },
-  setModeUI: (m) => { $('mode').value = m; $('selModes').hidden = m !== 'edit'; },
+  setModeUI: (m) => { $('mode').value = m; $('selModes').hidden = m !== 'edit'; if (typeof curWS === 'undefined' || curWS !== 'land') { document.body.dataset.side = m === 'edit' ? 'edit' : m === 'sculpt' ? 'sculpt' : 'object'; syncSideTabs?.(); } },
   sculptEnter: (m) => sculpt.enter(m), sculptExit: () => sculpt.exit(), sculptGeometry: (m) => sculpt?.geometryFor(m), sculptInfo: () => sculpt?.info(),
   setSelModeUI: (m) => document.querySelectorAll('#selModes button').forEach((b) => b.classList.toggle('on', b.dataset.v === m)),
   blockPointer: (e) => (mats?.blockPointer(e) || window.__mfBlockPointer?.(e)), exportMaterial: (m, g) => mats?.exportMaterial(m, g),
@@ -204,14 +210,13 @@ sculpt = createSculpt({
 const SPHERE_DETAIL = { 2: 31, 3: 63, 4: 126 };
 function newSphere(level = 2, detail) {
   if (land?.active) setWorkspace('gen');
-  editor.reset(); if (model) scene.remove(model);
   const geo = new THREE.IcosahedronGeometry(0.7, detail ?? SPHERE_DETAIL[level] ?? 31); geo.translate(0, 0.7, 0);
   const mat = new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.6, side: THREE.DoubleSide }); offsetMat(mat);
   const mesh = new THREE.Mesh(geo, mat); mesh.name = 'Sphere';
-  model = new THREE.Group(); model.add(mesh); model.userData.norm = new THREE.Matrix4(); scene.add(model); state.current = null;
-  applyShading(); frameModel(); updateInfo(); $('drop').classList.add('hidden');
-  document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
-  editor.select(mesh); return editor.setMode('sculpt');
+  addSceneMesh(mesh, { label: mesh.name, source: 'primitive' });
+  editor.select(mesh);
+  $('progMsg').textContent = 'Added a sphere. The rest of the scene is unchanged.';
+  return editor.setMode('sculpt');
 }
 $('sculptron').onclick = async () => {
   if (!sculpt.active) { if (!model || land?.active) await newSphere(2); else await editor.setMode('sculpt'); if (!sculpt.active) return; sculpt.setDyn(true); return; }
@@ -238,6 +243,8 @@ function setWorkspace(w) {
   else if (prev === 'shader' || prev === 'uv') { if (state.prevShading) setShading(state.prevShading); state.prevShading = null; }
   if (w === 'uv') window.__mfUV?.show(true);
   if (on && state.shading === 'chibili') applyLandShading();
+  document.body.dataset.side = on ? 'land' : (editor?.mode === 'sculpt' ? 'sculpt' : editor?.mode === 'edit' ? 'edit' : 'object');
+  syncSideTabs?.();
   if (!on) updateInfo(); requestAnimationFrame(resize);
 }
 $('tabLand').onclick = () => setWorkspace('land'); $('tabGen').onclick = () => setWorkspace('gen');
@@ -246,19 +253,30 @@ window.MeshForgeLandscape = Object.assign(land, { setWorkspace });
 
 // ---------- Auth, AI Agent Bridge, Companion, Game Mode & Animation ----------
 const auth = createAuth({ status: (m) => { $('progMsg').textContent = m; } });
-const companion = createCompanion({ scene, camera: () => camera, status: (m) => { $('progMsg').textContent = m; } });
-const agentBridge = createAgentBridge({
-  scene, editor, getModel: () => (land?.active ? null : model), camera: () => camera, auth, status: (m) => { $('progMsg').textContent = m; }
+const companion = createCompanion({
+  camera: () => camera,
+  status: (m) => { $('progMsg').textContent = m; },
+  findAnchor: () => { let found = null; model?.traverse((o) => { if (!found && (o.name === 'Companion_Drone' || o.name === 'Companion_Echo')) found = o; }); return found; },
 });
-const gameMode = createGameMode({
-  scene, canvas, camera: () => camera, controls, auth, companion, status: (m) => { $('progMsg').textContent = m; }
+let addSceneMesh = (mesh, info) => { scene.add(mesh); editor.select(mesh); return mesh; };
+const agentBridge = createAgentBridge({
+  scene, editor, getModel: () => (land?.active ? null : model), camera: () => camera, auth,
+  status: (m) => { $('progMsg').textContent = m; },
+  addObject: (mesh, info) => addSceneMesh(mesh, info),
 });
 const animTimeline = createAnimationTimeline({
   scene, editor, getModel: () => (land?.active ? null : model), status: (m) => { $('progMsg').textContent = m; }
 });
+const gameMode = createGameMode({
+  scene, canvas, camera: () => camera, controls, status: (m) => { $('progMsg').textContent = m; },
+  getModel: () => model, editor, anim: animTimeline, isLandscape: () => !!land?.active,
+});
 
 // UI Event Wireup
-$('btnPlayGame')?.addEventListener('click', () => gameMode.togglePlay());
+$('btnPlayGame')?.addEventListener('click', () => gameMode.startPlay());
+$('btnPauseGame')?.addEventListener('click', () => gameMode.pausePlay());
+$('btnStopGame')?.addEventListener('click', () => gameMode.stopPlay());
+$('btnRestartGame')?.addEventListener('click', () => gameMode.restart());
 $('topVoiceBtn')?.addEventListener('click', () => agentBridge.toggleVoice());
 $('btnOpenAIConsole')?.addEventListener('click', () => agentBridge.toggleConsole());
 $('userAuthChip')?.addEventListener('click', () => {
@@ -285,19 +303,17 @@ window.addEventListener('mf-wallet-changed', (e) => {
 const animClock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const delta = animClock.getDelta();
-  if (gameMode.isPlaying()) {
-    gameMode.tick(delta);
-  } else {
-    editor.tick();
-    sculpt.tick();
-    if (land?.active && state.shading === 'chibili') applyLandShading();
-    animTimeline.tick(delta);
-    controls.update();
-  }
+  editor.tick();
+  if (!gameMode.isActive()) sculpt.tick();
+  if (land?.active && state.shading === 'chibili') applyLandShading();
+  if (gameMode.isSimulating()) gameMode.tick(delta);
+  else animTimeline.tick(delta);
+  if (gameMode.allowsOrbit()) controls.update();
+  companion.tick?.();
   mats?.tick();
   window.__mfTick?.();
   renderer.render(scene, camera);
-  if (!gameMode.isPlaying()) drawGizmo();
+  drawGizmo();
 });
 
 function loadGLB(url, onDone, onError) {
@@ -401,9 +417,15 @@ async function refreshHistory() {
     li.querySelector('.del').onclick = async (e) => { e.stopPropagation(); await fetch(`/api/jobs/${j.id}`, { method: 'DELETE' }); refreshHistory(); };
   });
 }
-loadConfig(); refreshHistory().then(async () => {  // reopen the latest result
-  if (new URLSearchParams(location.search).get('scene')) return;
-  try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ }
+loadConfig();
+const bootJobs = refreshHistory().then(async () => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('scene')) return 'scene';
+  if (q.has('noautosave')) {
+    try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ }
+    return 'jobs';
+  }
+  return 'maybe-autosave';
 });
 // ---------- export buttons + menus ----------
 function exportAny(fmt) { if (land?.active && land.exportAs) return land.exportAs(fmt); return editor.exportAs(fmt); }
@@ -455,19 +477,103 @@ const sceneIO = createSceneIO({
     const ph = man?.photo; $('photoOv').hidden = true; $('oPhoto').hidden = !ph; if (ph) $('photoOv').src = sceneIO.resolve(ph);
   },
 });
+addSceneMesh = (mesh, info = {}) => {
+  if (land?.active) setWorkspace('gen');
+  const behaviours = mesh.userData.behaviours || info.behaviours;
+  let root = model;
+  if (root?.userData.isScene) {
+    sceneIO.addObject(root, mesh, { id: info.id || mesh.name, label: info.label || mesh.name, source: info.source || 'primitive', behaviours });
+  } else if (root) {
+    mesh.name = info.label || mesh.name || 'Object';
+    if (Array.isArray(behaviours)) mesh.userData.behaviours = JSON.parse(JSON.stringify(behaviours));
+    root.add(mesh);
+  } else {
+    root = sceneIO.ensureRoot(false);
+    if (!scene.children.includes(root)) scene.add(root);
+    sceneIO.addObject(root, mesh, { id: info.id || mesh.name, label: info.label || mesh.name, source: info.source || 'primitive', behaviours });
+  }
+  applyShading();
+  $('drop').classList.add('hidden');
+  document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  editor.select(mesh);
+  updateInfo();
+  return mesh;
+};
+function findObject(id) {
+  if (!id) return editor.sel;
+  if (id.isMesh) return id;
+  let found = null;
+  model?.traverse((o) => { if (!found && o.isMesh && !o.userData.isOverlay && (o.userData.sceneId === id || o.name === id || o.uuid === id)) found = o; });
+  return found;
+}
+function loadKioskSample() {
+  if (gameMode.isActive()) gameMode.stopPlay();
+  if (land?.active) setWorkspace('gen');
+  const parts = buildKioskSample();
+  const names = new Set(parts.map((p) => p.name));
+  let root = model;
+  if (!root) {
+    root = sceneIO.ensureRoot(false);
+    if (!scene.children.includes(root)) scene.add(root);
+  }
+  for (const c of [...root.children]) {
+    if ((c.isGroup && c.name === 'Kiosk sample') || (c.isMesh && names.has(c.name) && c.userData.source === 'sample')) root.remove(c);
+  }
+  const folder = new THREE.Group();
+  folder.name = 'Kiosk sample';
+  folder.userData.source = 'sample';
+  root.add(folder);
+  for (const mesh of parts) {
+    mesh.userData.source = 'sample';
+    mesh.userData.sceneId = mesh.userData.sceneId || mesh.name;
+    mesh.userData.label = mesh.name;
+    folder.add(mesh);
+  }
+  applyShading();
+  $('drop').classList.add('hidden');
+  document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  editor.select(null);
+  const player = parts.find((p) => p.name === 'Player');
+  if (player) editor.select(player);
+  frameModel(); updateInfo();
+  $('progMsg').textContent = `Loaded the kiosk sample (${parts.length} objects). Press Play to run this scene.`;
+  return parts.map((p) => p.name);
+}
 function sceneObjects() { return model ? model.children.filter((o) => o.isMesh && !o.userData.isOverlay) : []; }
+function contentList(root, depth, out) {
+  if (!root) return out;
+  for (const c of root.children) {
+    if (!c || c.userData?.isOverlay || c.userData?.isWireOverlay || c.userData?.isSelection) continue;
+    if (c.isMesh && c.parent?.isMesh) continue;
+    if (!(c.isMesh || c.isGroup)) continue;
+    out.push({ obj: c, depth });
+    if (c.isGroup) contentList(c, depth + 1, out);
+  }
+  return out;
+}
+function outlineObjects() { return model ? contentList(model, 0, []) : []; }
 var olistKey = '';
 function refreshOutliner() {
   const el = $('outliner'); if (!el) return;
-  const objs = model?.userData.isScene && !land?.active ? sceneObjects() : [];
-  el.hidden = !objs.length; if (!objs.length) { olistKey = ''; return; }
-  const sel = editor?.sel;
-  const key = objs.map((o) => `${o.uuid}${o.visible ? 1 : 0}${o === sel ? 1 : 0}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
+  const items = outlineObjects();
+  el.hidden = !items.length;
+  const exp = el.querySelector('.oexp'); if (exp) exp.hidden = !model?.userData.isScene;
+  if (!items.length) { olistKey = ''; return; }
+  const key = items.map(({ obj: o, depth }) => `${depth}${o.uuid}${o.visible ? 1 : 0}${editor?.isSelected?.(o) ? 1 : 0}${o === editor?.sel ? 'a' : ''}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  $('olist').innerHTML = objs.map((o, i) => `<li data-i="${i}" class="${o === sel ? 'sel' : ''} ${o.visible ? '' : 'hid'}"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name)}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
+  $('olist').innerHTML = items.map(({ obj: o, depth }, i) => `<li data-i="${i}" class="${editor.isSelected(o) ? 'sel' : ''} ${o === editor.sel ? 'active' : ''} ${o.visible ? '' : 'hid'}" style="padding-left:${6 + depth * 12}px"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name || (o.isGroup ? 'Group' : 'Object'))}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
   $('olist').querySelectorAll('li').forEach((li) => {
-    const o = objs[+li.dataset.i];
-    li.onclick = (e) => { if (e.target.classList.contains('eye')) { o.visible = !o.visible; if (!o.visible && editor.sel === o && editor.mode === 'object') editor.select(null); updateInfo(); return; } selectObject(o); };
+    const o = items[+li.dataset.i].obj;
+    li.onclick = (e) => {
+      if (e.target.classList.contains('eye')) {
+        o.visible = !o.visible;
+        if (!o.visible && editor.isSelected(o)) editor.select(o, { extend: true, toggle: true });
+        updateInfo();
+        return;
+      }
+      if (e.shiftKey) editor.select(o, { extend: true, toggle: true });
+      else selectObject(o);
+    };
   });
 }
 async function selectObject(o) {
@@ -477,25 +583,51 @@ async function selectObject(o) {
   o.visible = true; editor.select(o); updateInfo(); return true;
 }
 var dupN = 0;
-async function duplicateObject() {
-  const src = editor.sel; if (!src || !src.parent) return null;
-  if (editor.mode !== 'object') await editor.setMode('object');
-  const mat = (src.userData.orig || src.material).clone();
-  const c = new THREE.Mesh(copyData(src.geometry, src.geometry.clone()), mat); c.position.copy(src.position); c.quaternion.copy(src.quaternion); c.scale.copy(src.scale);
-  const sz = new THREE.Box3().setFromObject(src).getSize(new THREE.Vector3()); c.position.x += Math.max(sz.x * 1.1, 0.05) / (src.parent.scale.x || 1);
+function cloneOne(src) {
+  const matSrc = src.userData.orig || src.material;
+  const mat = Array.isArray(matSrc) ? matSrc.map((m) => m.clone()) : matSrc.clone();
+  const c = new THREE.Mesh(copyData(src.geometry, src.geometry.clone()), mat);
+  c.position.copy(src.position); c.quaternion.copy(src.quaternion); c.scale.copy(src.scale);
+  const sz = new THREE.Box3().setFromObject(src).getSize(new THREE.Vector3());
+  c.position.x += Math.max(sz.x * 1.1, 0.05) / (src.parent?.scale.x || 1);
   c.name = `${src.name}.${String(++dupN).padStart(3, '0')}`;
   c.userData = { sceneId: src.userData.sceneId ? `${src.userData.sceneId}_copy${dupN}` : undefined, label: c.name, source: src.userData.source, ref: src.userData.ref, avgColor: src.userData.avgColor, note: src.userData.note };
+  if (Array.isArray(src.userData.behaviours)) c.userData.behaviours = JSON.parse(JSON.stringify(src.userData.behaviours.map((b) => ({ type: b.type, enabled: b.enabled !== false, params: b.params || {} }))));
   if (src.userData.mf) { c.userData.mf = JSON.parse(JSON.stringify(src.userData.mf)); const t = mats?.texOf(src); if (t) mats.adoptTextureImage(c, t.canvas, t.name); }
-  const parent = src.parent; parent.add(c); applyShading();
-  editor.pushHistory({ label: 'Duplicate object', undo: () => { if (editor.sel === c) editor.select(null); parent.remove(c); updateInfo(); }, redo: () => { parent.add(c); updateInfo(); } });
-  editor.select(c); updateInfo(); $('progMsg').textContent = `Duplicated ${src.name} → ${c.name} · Ctrl+Z to undo`; return c;
+  return c;
 }
-async function deleteObject(o = editor.sel) {
-  if (!o || !o.parent) return false;
+async function duplicateObject() {
+  const list = editor.selection().filter((o) => o.parent);
+  if (!list.length) return null;
   if (editor.mode !== 'object') await editor.setMode('object');
-  const parent = o.parent; editor.select(null); parent.remove(o);
-  editor.pushHistory({ label: 'Delete object', undo: () => { parent.add(o); updateInfo(); }, redo: () => { if (editor.sel === o) editor.select(null); parent.remove(o); updateInfo(); } });
-  updateInfo(); $('progMsg').textContent = `Deleted ${o.name} · Ctrl+Z to undo`; return true;
+  const created = list.map((src) => { const c = cloneOne(src); src.parent.add(c); return c; });
+  applyShading();
+  editor.pushHistory({
+    label: created.length > 1 ? `Duplicate ${created.length} objects` : 'Duplicate object',
+    undo: () => { editor.select(null); created.forEach((c) => c.parent?.remove(c)); updateInfo(); },
+    redo: () => { created.forEach((c, i) => list[i].parent?.add(c)); updateInfo(); },
+  });
+  editor.select(null);
+  created.forEach((c) => editor.select(c, { extend: true }));
+  updateInfo();
+  $('progMsg').textContent = created.length > 1 ? `Duplicated ${created.length} objects · Ctrl+Z to undo` : `Duplicated ${list[0].name} → ${created[0].name} · Ctrl+Z to undo`;
+  return created[0];
+}
+async function deleteObject(o) {
+  const list = (o ? [o] : editor.selection()).filter((x) => x && x.parent);
+  if (!list.length) return false;
+  if (editor.mode !== 'object') await editor.setMode('object');
+  const recs = list.map((obj) => ({ obj, parent: obj.parent }));
+  editor.select(null);
+  recs.forEach((r) => r.parent.remove(r.obj));
+  editor.pushHistory({
+    label: recs.length > 1 ? `Delete ${recs.length} objects` : 'Delete object',
+    undo: () => { recs.forEach((r) => r.parent.add(r.obj)); updateInfo(); },
+    redo: () => { editor.select(null); recs.forEach((r) => r.parent.remove(r.obj)); updateInfo(); },
+  });
+  updateInfo();
+  $('progMsg').textContent = recs.length > 1 ? `Deleted ${recs.length} objects · Ctrl+Z to undo` : `Deleted ${recs[0].obj.name} · Ctrl+Z to undo`;
+  return true;
 }
 var explodeK = 0;
 function setExplode(k) {
@@ -535,12 +667,54 @@ async function sendLandscapeToScene(opts = {}) {
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   return { id: m.userData.sceneId, label: m.name };
 }
+function sendLandscapeToLevel() {
+  if (!land?.levelGroup) { $('progMsg').textContent = 'Landscape is not ready'; return null; }
+  if (!land.result) land.rebuild();
+  const group = land.levelGroup();
+  if (!group || !group.children.length) { $('progMsg').textContent = 'Build a landscape first'; return null; }
+  if (land.active) setWorkspace('gen');
+  let root = model;
+  if (!root) {
+    root = sceneIO.ensureRoot(false);
+    if (!scene.children.includes(root)) scene.add(root);
+  }
+  const old = root.children.find((c) => c.userData?.isLandscapeLevel || c.name === 'Landscape');
+  if (old) root.remove(old);
+  root.add(group);
+  applyShading();
+  $('drop').classList.add('hidden');
+  document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  const terrain = group.children.find((c) => c.name === 'Terrain');
+  if (editor.mode !== 'object') editor.setMode('object');
+  editor.select(terrain || group);
+  frameModel(); updateInfo();
+  const note = group.userData.spawnTruncated ? ` (${group.userData.spawnTruncated} extra instances were left out of the individual copies)` : '';
+  $('progMsg').textContent = `Landscape is now part of the scene · ${group.children.length} objects${note}`;
+  return { name: group.name, children: group.children.map((c) => c.name) };
+}
+function captureSpawn() {
+  const src = editor.sel;
+  if (!src?.isMesh) { $('progMsg').textContent = 'Select a mesh, then add it as a spawn type'; return false; }
+  const id = `asset_${src.name || src.uuid}`;
+  land.setAsset(id, [src.geometry]);
+  land.addSpawner({ kind: id, assetId: id, name: src.name || 'Mesh', count: 8, paints: ['grass', 'sand'], maxSlope: 30, scaleMin: 0.8, scaleMax: 1.2 });
+  if (!land.active) setWorkspace('land');
+  $('progMsg').textContent = `${src.name} can now be scattered on the landscape`;
+  return true;
+}
+function buildLevel(opts = {}) {
+  const width = opts.width || 48, depth = opts.depth || 48;
+  land.generate({ seed: opts.seed ?? (Math.floor(Math.random() * 9000) + 1), randomize: opts.randomize !== false, regions: true, params: { width, depth, size: Math.max(width, depth) } });
+  const trees = opts.trees ?? 14;
+  if (trees > 0) land.addSpawner({ kind: 'tree', name: 'Trees', count: trees, paints: ['grass'], maxSlope: 26, scaleMin: 0.6, scaleMax: 1.6 });
+  return sendLandscapeToLevel();
+}
 Object.assign(window.MeshForge, {
   loadScene: (src, opts) => sceneIO.loadScene(src, opts),
   exportScene: () => { const m = sceneIO.exportScene(); if (explodeK) m.objects.forEach((o) => { const x = sceneObjects().find((y) => y.userData.sceneId === o.id); if (x) o.position[2] = +(x.position.z - (x.userData.exz || 0)).toFixed(5); }); return m; },
   exportSceneBundle: exportBundle,
   exportSelectedGLB: () => editor.sel ? editor.encode('glb', editor.sel) : Promise.reject(new Error('Nothing selected')),
-  getObjects: () => sceneObjects().map((o) => ({ id: o.userData.sceneId ?? o.uuid, label: o.name, source: o.userData.source || '', visible: o.visible, selected: o === editor.sel,
+  getObjects: () => sceneObjects().map((o) => ({ id: o.userData.sceneId ?? o.uuid, label: o.name, source: o.userData.source || '', visible: o.visible, selected: editor.isSelected(o),
     position: o.position.toArray(), rotation: [o.rotation.x, o.rotation.y, o.rotation.z], scale: o.scale.toArray() })),
   selectObject: (id) => selectObject(id),
   getSelected: () => editor.sel ? (editor.sel.userData.sceneId ?? editor.sel.uuid) : null,
@@ -581,7 +755,78 @@ function addPrimitive(kind) {
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   applyShading(); updateInfo(); editor.select(mesh); return mesh;
 }
-Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addPrimitive('water'), matlib: () => mats.showLibrary(mats.libEl.hidden), shader: () => setWorkspace('shader'), uvws: () => setWorkspace('uv'), playgame: () => gameMode.togglePlay(), aiconsole: () => agentBridge.toggleConsole() });
+function refreshXform() {
+  const panel = $('xform'); if (!panel || !editor) return;
+  const show = editor.mode === 'object' && !!editor.sel && !land?.active && !document.body.classList.contains('mf-sim');
+  panel.hidden = !show;
+  if (!show) return;
+  const t = editor.getTransform();
+  if (!t) { panel.hidden = true; return; }
+  const spaceBtn = $('spaceBtn');
+  if (spaceBtn) spaceBtn.textContent = editor.getSpace() === 'local' ? 'Local' : 'Global';
+  const snap = editor.getSnap();
+  if ($('snapOn') && document.activeElement !== $('snapOn')) $('snapOn').checked = snap.on;
+  for (const row of panel.querySelectorAll('.xr')) {
+    row.querySelectorAll('input').forEach((inp) => {
+      if (document.activeElement === inp) return;
+      const v = t[row.dataset.ch][+inp.dataset.a];
+      inp.value = Number.isFinite(v) ? String(Math.round(v * 1000) / 1000) : '';
+    });
+  }
+  refreshBehaviours();
+}
+function refreshBehaviours() {
+  const host = $('behList'); if (!host || !editor?.sel) return;
+  if (host.contains(document.activeElement)) return;
+  const rows = listBehaviours(editor.sel);
+  host.innerHTML = rows.map((b, i) => {
+    const extra = b.type === 'script'
+      ? `<textarea data-i="${i}" data-k="source">${(b.params.source || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</textarea>`
+      : Object.entries(b.params).map(([k, v]) => `<label>${k}<input data-i="${i}" data-k="${k}" value="${String(v).replace(/"/g, '&quot;')}"></label>`).join('');
+    return `<div class="beh-row"><b>${b.type}</b><button type="button" class="rm" data-rm="${i}">×</button></div><div class="beh-row">${extra}</div>`;
+  }).join('') || '<div class="beh-row"><span>None. Play only runs behaviours you attach.</span></div>';
+  host.querySelectorAll('[data-rm]').forEach((btn) => { btn.onclick = () => mutateBehaviours(rows.filter((_, i) => i !== +btn.dataset.rm), 'Remove behaviour'); });
+  host.querySelectorAll('input[data-k], textarea[data-k]').forEach((inp) => {
+    inp.onchange = () => {
+      const next = listBehaviours(editor.sel).map((b) => ({ type: b.type, enabled: b.enabled !== false, params: { ...b.params } }));
+      const row = next[+inp.dataset.i]; if (!row) return;
+      const raw = inp.value;
+      row.params[inp.dataset.k] = inp.dataset.k === 'source' || Number.isNaN(+raw) || raw.trim() === '' ? raw : +raw;
+      mutateBehaviours(next, 'Edit behaviour');
+    };
+  });
+}
+function mutateBehaviours(next, label) {
+  const obj = editor.sel; if (!obj) return;
+  const prev = listBehaviours(obj).map((b) => ({ type: b.type, enabled: b.enabled, params: { ...b.params } }));
+  setBehaviours(obj, next);
+  editor.pushHistory({ label, undo: () => { setBehaviours(obj, prev); updateInfo(); }, redo: () => { setBehaviours(obj, next); updateInfo(); } });
+  updateInfo();
+}
+function bindXform() {
+  const panel = $('xform'); if (!panel || panel.dataset.bound) return; panel.dataset.bound = '1';
+  $('spaceBtn').onclick = () => { editor.setSpace(editor.getSpace() === 'local' ? 'world' : 'local'); refreshXform(); };
+  $('snapOn').onchange = () => editor.setSnap($('snapOn').checked, readSnapSteps());
+  ['snapMove', 'snapRot', 'snapScale'].forEach((id) => { $(id).onchange = () => editor.setSnap($('snapOn').checked, readSnapSteps()); });
+  panel.querySelectorAll('.xr input').forEach((inp) => {
+    inp.onchange = () => { editor.applyNumeric(inp.closest('.xr').dataset.ch, +inp.dataset.a, parseFloat(inp.value)); refreshXform(); };
+  });
+  panel.querySelectorAll('[data-align]').forEach((b) => { b.onclick = () => editor.align(b.dataset.align); });
+  $('groundBtn').onclick = () => editor.dropToGround();
+  const sel = $('behType');
+  sel.innerHTML = BEHAVIOUR_TYPES.map((t) => `<option value="${t.type}">${t.label}</option>`).join('');
+  $('behAdd').onclick = () => {
+    if (!editor.sel) return;
+    const type = sel.value;
+    const params = { ...(BEHAVIOUR_TYPES.find((t) => t.type === type)?.defaults || {}) };
+    mutateBehaviours([...listBehaviours(editor.sel), { type, enabled: true, params }], 'Add behaviour');
+  };
+}
+function readSnapSteps() {
+  return { move: parseFloat($('snapMove').value), rotate: parseFloat($('snapRot').value), scale: parseFloat($('snapScale').value) };
+}
+bindXform();
+Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addPrimitive('water'), matlib: () => mats.showLibrary(mats.libEl.hidden), shader: () => setWorkspace('shader'), uvws: () => setWorkspace('uv'), playgame: () => gameMode.togglePlay(), aiconsole: () => agentBridge.toggleConsole(), samplekiosk: () => loadKioskSample() });
 document.querySelectorAll('.menu [data-act]').forEach((b) => b.onclick = () => { document.activeElement?.blur(); ACTIONS[b.dataset.act]?.(); });
 // scene.json: persist the material library and per-object slots; honour room.camera
 const _exportScene = window.MeshForge.exportScene;
@@ -609,6 +854,14 @@ Object.assign(window.MeshForge, {
   },
   addSky: () => addPrimitive('sky').name, addWater: () => addPrimitive('water').name, offline: () => !!state.offline,
   auth, agent: agentBridge, companion, game: gameMode, anim: animTimeline,
+  useAsLevel: () => sendLandscapeToLevel(),
+  captureSpawn, buildLevel,
+  project: null,
+  loadSample: (name = 'kiosk') => (name === 'kiosk' ? loadKioskSample() : null),
+  getSelection: () => editor.selection().map((o) => ({ id: o.userData.sceneId ?? o.uuid, name: o.name })),
+  setBehaviours: (id, list) => { const o = findObject(id); if (!o) return false; setBehaviours(o, list); updateInfo(); return true; },
+  getBehaviours: (id) => { const o = findObject(id); return o ? listBehaviours(o) : null; },
+  applyNumeric: (ch, axis, value) => editor.applyNumeric(ch, axis, value),
 });
 Object.defineProperty(window.MeshForge, 'shading', { get: () => state.shading, configurable: true }); Object.defineProperty(window.MeshForge, 'workspace', { get: () => curWS, configurable: true });
 window.__meshforge.mats = mats; window.__meshforge.setShading = setShading; window.__meshforge.setWorkspace = setWorkspace; window.__meshforge.addPrimitive = addPrimitive; window.__meshforge.sceneObjects = sceneObjects;
@@ -642,3 +895,102 @@ $('rigFile').onchange = async (e) => { const f = e.target.files[0]; e.target.val
 window.MeshForge.loadRig = async (src) => { const m = await window.MeshForge.loadGLB(src); if (!rig.info().skinned) $('progMsg').textContent = 'Loaded, but that file has no skin (no rig): it opened as a normal model'; return rig.info(); };
 window.MeshForge.rig = { info: () => rig.info(), play: () => rig.play(), pause: () => rig.pause(), stop: () => rig.stop(), scrub: (t) => rig.scrub(t), setClip: (i) => rig.setClip(i), selectBone: (i) => rig.selectBone(i), poseBone: (name, euler) => rig.poseBone(name, euler), restPose: () => rig.restPose(), weightView: (on) => rig.weightView(on), showBones: (on) => rig.showBones(on) };
 window.__meshforge.rig = rig;
+
+function newProject() {
+  if (gameMode.isActive()) gameMode.stopPlay();
+  editor.reset();
+  if (model) { scene.remove(model); model = null; }
+  animTimeline.importKeys({ keys: [], fps: 30, start: 0, end: 120, frame: 0 }, () => null);
+  $('drop').classList.remove('hidden');
+  updateInfo();
+  $('progMsg').textContent = 'New project';
+}
+const project = createProject({
+  THREE,
+  getModel: () => model,
+  status: (m) => { $('progMsg').textContent = m; },
+  getCamera: () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: persp.fov }),
+  setCamera,
+  materialsJSON: () => mats.libJSON(),
+  applyMaterials: (list) => mats.loadLib(list),
+  timelineJSON: () => animTimeline.exportKeys(),
+  applyTimeline: (pack, find) => animTimeline.importKeys(pack, find),
+  landscapeJSON: () => { try { return JSON.parse(land.projectJSON()); } catch { return null; } },
+  applyLandscape: (data) => land.loadProject(data),
+  clearModel() { editor.reset(); if (model) { scene.remove(model); model = null; } },
+  ensureModel() {
+    if (!model) { model = new THREE.Group(); model.name = 'Scene'; model.userData.isScene = true; model.userData.norm = new THREE.Matrix4(); scene.add(model); }
+    return model;
+  },
+  afterLoad() {
+    applyShading(); updateInfo(); $('drop').classList.add('hidden');
+    document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  },
+  download: (blob, name) => editor.save(blob, name),
+  pickFile: () => $('projectFile').click(),
+});
+window.MeshForge.project = project;
+$('projectFile').onchange = async (e) => {
+  const f = e.target.files?.[0]; e.target.value = '';
+  if (!f) return;
+  try { await project.loadText(await f.text()); $('progMsg').textContent = 'Opened ' + f.name; }
+  catch (err) { $('progMsg').textContent = 'Open failed: ' + err.message; }
+};
+Object.assign(ACTIONS, { newproj: () => newProject(), openproj: () => project.open(), saveproj: () => project.save(), saveas: () => project.saveAs() });
+setInterval(() => { if (model && !gameMode.isActive()) project.writeAutosave(); }, 20000);
+addEventListener('beforeunload', () => { if (model) project.writeAutosave(); });
+bootJobs.then(async (mode) => { if (mode === 'maybe-autosave') { const ok = await project.maybeRestore(); if (!ok) { try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ } } } });
+
+function syncSideTabs() {
+  document.querySelectorAll('#sideTabs button').forEach((b) => b.classList.toggle('on', b.dataset.side === document.body.dataset.side));
+}
+function setSide(side) {
+  document.body.dataset.side = side;
+  syncSideTabs();
+  if (side === 'land') { if (curWS !== 'land') setWorkspace('land'); return; }
+  if (curWS === 'land') setWorkspace('gen');
+  if (side === 'sculpt') { if (editor.mode !== 'sculpt') editor.setMode('sculpt'); return; }
+  if (side === 'edit') { if (editor.mode !== 'edit') editor.setMode('edit'); return; }
+  if (editor.mode !== 'object') editor.setMode('object');
+}
+function installSideTabs() {
+  const props = document.querySelector('.props');
+  const strip = document.createElement('div');
+  strip.id = 'sideTabs';
+  strip.innerHTML = `<button type="button" data-side="object" title="Object">◇</button><button type="button" data-side="edit" title="Edit">▦</button><button type="button" data-side="sculpt" title="Sculpt">◉</button><button type="button" data-side="land" title="Landscape">⌂</button>`;
+  props.prepend(strip);
+  strip.onclick = (e) => { const b = e.target.closest('button'); if (b) setSide(b.dataset.side); };
+  const edit = document.createElement('div');
+  edit.id = 'editPanel';
+  edit.innerHTML = `<details open><summary>Selection</summary>
+    <div class="row"><button class="btn" id="edLoop" type="button">Edge loop</button><button class="btn" id="edRing" type="button">Edge ring</button></div>
+    <div class="row"><button class="btn" id="edFace" type="button">Face loop</button><button class="btn" id="edLink" type="button">Linked</button></div>
+    <div class="hint0">Alt+click a loop. Alt+Shift+click a ring. L selects the linked island.</div>
+  </details>
+  <details open><summary>Face sets</summary>
+    <div class="row"><button class="btn" id="edSetNew" type="button">Set from selection</button></div>
+    <div class="row"><select id="edSets"></select><button class="btn" id="edSetSel" type="button">Select</button></div>
+  </details>`;
+  props.appendChild(edit);
+  edit.querySelector('#edLoop').onclick = () => editor.runStoredLoop('loop');
+  edit.querySelector('#edRing').onclick = () => editor.runStoredLoop('ring');
+  edit.querySelector('#edFace').onclick = () => editor.runStoredLoop('face');
+  edit.querySelector('#edLink').onclick = () => editor.selectLinked();
+  edit.querySelector('#edSetNew').onclick = () => { const id = editor.createFaceSet(); const sel = edit.querySelector('#edSets'); const names = editor.faceSetNames(); sel.innerHTML = names.map((n, i) => `<option value="${i}">${n}</option>`).join(''); sel.value = String(id); };
+  edit.querySelector('#edSetSel').onclick = () => editor.selectFaceSet(+edit.querySelector('#edSets').value || 0);
+}
+installSideTabs();
+document.body.dataset.side = 'object';
+syncSideTabs();
+const _setWorkspace = setWorkspace;
+// keep the side tab in step with the workspace
+const origSet = setWorkspace;
+window.MeshForge.addPlane = (w = 2, d = 2, sw = 4, sh = 4) => {
+  if (land?.active) setWorkspace('gen');
+  const geo = new THREE.PlaneGeometry(w, d, sw, sh); geo.rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.6, side: THREE.DoubleSide }));
+  mesh.name = 'Grid';
+  addSceneMesh(mesh, { label: 'Grid', source: 'primitive' });
+  editor.select(mesh);
+  return mesh.name;
+};

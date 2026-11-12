@@ -98,10 +98,13 @@ def bridge_status():
         "connections_count": len(bridge_manager.active_connections),
         "clients": list(bridge_manager.agent_metadata.values()),
         "supported_tools": [
+            "list_tools", "get_scene_summary", "list_objects",
             "spawn_primitive", "delete_object", "transform_object",
-            "set_material", "set_shading", "generate_3d", "generate_level",
-            "companion_speak", "transfer_credits", "record_keyframe"
-        ]
+            "set_behaviour", "attach_script", "build_level", "generate_level",
+            "set_material", "set_shading", "set_environment",
+            "companion_speak", "transfer_credits",
+        ],
+        "note": "This process only relays commands to the open browser. The page executes the tools.",
     }
 
 @router.post("/command")

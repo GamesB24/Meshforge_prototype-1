@@ -17,8 +17,13 @@ export const CLASSES = [                                  // index order is stor
   { key: 'mountain', name: 'Mountain', rgb: [40, 40, 40] },
 ];
 const GRASS = 1;
+export function extent(P) {
+  const width = P.width > 0 ? P.width : P.size;
+  const depth = P.depth > 0 ? P.depth : (P.width > 0 ? P.width : P.size);
+  return { width, depth };
+}
 export const DEFAULTS = () => ({
-  seed: 1, size: 20, res: 192,
+  seed: 1, size: 20, width: 20, depth: 20, res: 192,
   base: { sand: 0.25, grass: 0.8, water: -1.2, mountain: 4.5 },
   noiseAmp: 0.5, noiseScale: 4, octaves: 4, blend: 1.0, waterLevel: 0, showWater: true, debugColour: false,
   hmapMin: -1.2, hmapMax: 5,
@@ -63,7 +68,7 @@ function regionMask(reg, n) {
 // ---------- core: height field ----------
 // state = { params, paint: Uint8Array(MAP*MAP), hmap: Float32Array(MAP*MAP)|null, regions: [] }
 export function computeField(state) {
-  const P = state.params, n = P.res + 1, cell = P.size / P.res, F = new Float32Array(n * n), cls = new Uint8Array(n * n);
+  const P = state.params, n = P.res + 1, { width, depth } = extent(P), cell = Math.min(width, depth) / P.res, F = new Float32Array(n * n), cls = new Uint8Array(n * n);
   const baseOf = CLASSES.map((c) => P.base[c.key]);
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
     const mi = Math.min(MAP - 1, Math.floor(i / (n - 1) * MAP)), mj = Math.min(MAP - 1, Math.floor(j / (n - 1) * MAP)), k = mj * MAP + mi;
@@ -88,14 +93,15 @@ export function computeField(state) {
       for (let i = 0; i < n * n; i++) F[i] += (top - F[i]) * m[i];
     } else for (let i = 0; i < n * n; i++) F[i] += reg.offset * m[i];
   }
-  return { F, cls, n, cell, size: P.size };
+  return { F, cls, n, cell, size: Math.max(width, depth), width, depth };
 }
 export function makeSampler(field) {
-  const { F, n, size } = field;
+  const { F, n, width, depth, size } = field;
+  const w = width || size, d = depth || size;
   return (x, z) => {
-    const u = Math.min(n - 1.0001, Math.max(0, (x / size + 0.5) * (n - 1))), v = Math.min(n - 1.0001, Math.max(0, (z / size + 0.5) * (n - 1)));
-    const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j, a = F[j * n + i], b = F[j * n + i + 1], c = F[(j + 1) * n + i], d = F[(j + 1) * n + i + 1];
-    return a + (b - a) * fu + (c - a) * fv + (a - b - c + d) * fu * fv;
+    const u = Math.min(n - 1.0001, Math.max(0, (x / w + 0.5) * (n - 1))), v = Math.min(n - 1.0001, Math.max(0, (z / d + 0.5) * (n - 1)));
+    const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j, a = F[j * n + i], b = F[j * n + i + 1], c0 = F[(j + 1) * n + i], d0 = F[(j + 1) * n + i + 1];
+    return a + (b - a) * fu + (c0 - a) * fv + (a - b - c0 + d0) * fu * fv;
   };
 }
 function slopeDeg(field, x, z, h) { const s = makeSamplerCached(field); const dx = (s(x + h, z) - s(x - h, z)) / (2 * h), dz = (s(x, z + h) - s(x, z - h)) / (2 * h); return Math.atan(Math.hypot(dx, dz)) * 180 / Math.PI; }
@@ -103,13 +109,17 @@ const samplerCache = new WeakMap(); function makeSamplerCached(f) { let s = samp
 
 // ---------- building scatter (jittered grid, seeded) ----------
 export function scatter(state, field) {
-  const P = state.params, S = P.scatter, out = []; if (!S.on || S.density <= 0) return out;
-  const r = rng(P.seed * 7919 + 17), sh = makeSamplerCached(field), half = P.size / 2, sp = Math.max(0.3, S.spacing), cells = Math.floor(P.size / sp);
-  for (let gy = 0; gy < cells; gy++) for (let gx = 0; gx < cells; gx++) {
+  const P = state.params, S = P.scatter, out = [];
+  const { width, depth } = extent(P);
+  const r = rng(P.seed * 7919 + 17), sh = makeSamplerCached(field), hx = width / 2, hz = depth / 2, sp = Math.max(0.3, S.spacing);
+  if (S.on && S.density > 0) {
+  const cellsX = Math.max(1, Math.floor(width / sp)), cellsZ = Math.max(1, Math.floor(depth / sp));
+  for (let gy = 0; gy < cellsZ; gy++) for (let gx = 0; gx < cellsX; gx++) {
     const roll = r(), jx = r(), jz = r(), rot = r(), sc = r(), tl = r();
     if (roll > S.density) continue;
-    const x = -half + (gx + 0.15 + jx * 0.7) * sp, z = -half + (gy + 0.15 + jz * 0.7) * sp;
-    const u = Math.min(MAP - 1, Math.floor((x / P.size + 0.5) * MAP)), v = Math.min(MAP - 1, Math.floor((z / P.size + 0.5) * MAP)), c = state.paint[v * MAP + u];
+    const x = -hx + (gx + 0.15 + jx * 0.7) * sp, z = -hz + (gy + 0.15 + jz * 0.7) * sp;
+    if (Math.abs(x) > hx || Math.abs(z) > hz) continue;
+    const u = Math.min(MAP - 1, Math.floor((x / width + 0.5) * MAP)), v = Math.min(MAP - 1, Math.floor((z / depth + 0.5) * MAP)), c = state.paint[v * MAP + u];
     if (!((c === GRASS && S.onGrass) || (c === 0 && S.onSand))) continue;
     const h = sh(x, z); if (h < P.waterLevel + S.waterMargin) continue;
     if (slopeDeg(field, x, z, 0.25) > S.maxSlope) continue;
@@ -119,6 +129,29 @@ export function scatter(state, field) {
     const s = S.scaleMin + sc * (S.scaleMax - S.scaleMin), fp = 0.35 * s;
     const y = Math.min(h, sh(x - fp, z - fp), sh(x + fp, z - fp), sh(x - fp, z + fp), sh(x + fp, z + fp));
     out.push({ type: tl < S.tall ? 'tower' : 'house', x, y, z, rot: S.rotate ? rot * Math.PI * 2 : 0, scale: s });
+  }
+  }
+  for (const rule of state.extraSpawners || []) {
+    if (rule.enabled === false) continue;
+    const want = Math.max(0, rule.count | 0);
+    if (!want) continue;
+    const rr = rng(((rule.seed ?? P.seed) * 9973 + 19) >>> 0);
+    const paints = new Set(rule.paints || ['grass']);
+    let placed = 0;
+    for (let n = 0; n < want * 40 && placed < want; n++) {
+      const x = (rr() - 0.5) * width, z = (rr() - 0.5) * depth;
+      const u = Math.min(MAP - 1, Math.floor((x / width + 0.5) * MAP)), v = Math.min(MAP - 1, Math.floor((z / depth + 0.5) * MAP));
+      const key = CLASSES[state.paint[v * MAP + u]]?.key;
+      if (!paints.has(key)) continue;
+      const h = sh(x, z);
+      if (h < P.waterLevel + (rule.waterMargin ?? 0.1)) continue;
+      if (h < (rule.minHeight ?? -1e9) || h > (rule.maxHeight ?? 1e9)) continue;
+      if (slopeDeg(field, x, z, 0.25) > (rule.maxSlope ?? 28)) continue;
+      const smin = rule.scaleMin ?? 0.7, smax = rule.scaleMax ?? 1.3;
+      const s = smin + rr() * Math.max(0, smax - smin);
+      out.push({ type: rule.kind || 'tree', x, y: h, z, rot: rule.rotate === false ? 0 : rr() * Math.PI * 2, scale: s, assetId: rule.assetId || null });
+      placed++;
+    }
   }
   return out;
 }
@@ -130,7 +163,9 @@ function stripGeo(g) { g = g.index ? g.toNonIndexed() : g; for (const k of Objec
 export function defaultModules() {
   const body = new THREE.BoxGeometry(0.7, 0.5, 0.9); body.translate(0, 0.25, 0);
   const tower = new THREE.BoxGeometry(0.6, 2.2, 0.6); tower.translate(0, 1.1, 0);
-  return { house: [stripGeo(body), stripGeo(roofGeo())], tower: [stripGeo(tower)] };
+  const trunk = new THREE.CylinderGeometry(0.08, 0.12, 0.55, 6); trunk.translate(0, 0.28, 0);
+  const crown = new THREE.ConeGeometry(0.42, 1.05, 7); crown.translate(0, 1.15, 0);
+  return { house: [stripGeo(body), stripGeo(roofGeo())], tower: [stripGeo(tower)], tree: [stripGeo(trunk), stripGeo(crown)] };
 }
 const BUILD_MAT = new THREE.MeshStandardMaterial({ color: 0xb4b4b4, roughness: 0.85, flatShading: true, side: THREE.DoubleSide });
 const TERRAIN_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
@@ -139,14 +174,18 @@ const WATER_MAT = new THREE.MeshStandardMaterial({ color: 0x3a78d0, transparent:
 // ---------- builder: owns meshes, reuses buffers ----------
 export function createBuilder() {
   const group = new THREE.Group(); group.name = 'Landscape';
-  let terrain = null, water = null, inst = [], modules = defaultModules(), last = null;
+  let terrain = null, water = null, inst = [], modules = defaultModules(), assets = new Map(), last = null;
+  function geosFor(type, assetId) {
+    if (assetId && assets.has(assetId)) return assets.get(assetId);
+    return modules[type] || modules.house;
+  }
   function buildTerrain(state, field) {
-    const P = state.params, n = field.n;
-    if (!terrain || terrain.userData.res !== P.res || terrain.userData.size !== P.size) {
+    const P = state.params, n = field.n, { width, depth } = extent(P);
+    if (!terrain || terrain.userData.res !== P.res || terrain.userData.width !== width || terrain.userData.depth !== depth) {
       if (terrain) { group.remove(terrain); terrain.geometry.dispose(); }
-      const g = new THREE.PlaneGeometry(P.size, P.size, P.res, P.res); g.rotateX(-Math.PI / 2);
+      const g = new THREE.PlaneGeometry(width, depth, P.res, P.res); g.rotateX(-Math.PI / 2);
       g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * n * 3), 3));
-      terrain = new THREE.Mesh(g, TERRAIN_MAT); terrain.name = 'Terrain'; terrain.userData = { res: P.res, size: P.size }; group.add(terrain);
+      terrain = new THREE.Mesh(g, TERRAIN_MAT); terrain.name = 'Terrain'; terrain.userData = { res: P.res, size: Math.max(width, depth), width, depth }; group.add(terrain);
     }
     const pos = terrain.geometry.attributes.position, col = terrain.geometry.attributes.color, F = field.F;
     let lo = Infinity, hi = -Infinity; for (let i = 0; i < F.length; i++) { lo = Math.min(lo, F[i]); hi = Math.max(hi, F[i]); }
@@ -161,14 +200,17 @@ export function createBuilder() {
   function buildWater(state) {
     const P = state.params;
     if (!water) { water = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), WATER_MAT); water.name = 'Water'; water.renderOrder = 2; group.add(water); }
-    water.scale.set(P.size, 1, P.size); water.position.y = P.waterLevel; water.visible = P.showWater;
+    const { width, depth } = extent(state.params);
+    water.scale.set(width, 1, depth); water.position.y = state.params.waterLevel; water.visible = state.params.showWater;
   }
   function buildInstances(list) {
     for (const m of inst) { group.remove(m); m.dispose(); } inst = [];
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
-    for (const type of ['house', 'tower']) {
+    const types = [...new Set(list.map((b) => b.type))];
+    for (const type of types) {
       const items = list.filter((b) => b.type === type); if (!items.length) continue;
-      for (const geo of modules[type]) {
+      const geos = geosFor(type, items[0].assetId);
+      for (const geo of geos) {
         const im = new THREE.InstancedMesh(geo, BUILD_MAT, items.length); im.name = type === 'house' ? 'Houses' : 'Towers';
         items.forEach((b, i) => { q.setFromAxisAngle(up, b.rot); m4.compose(new THREE.Vector3(b.x, b.y, b.z), q, new THREE.Vector3(b.scale, b.scale, b.scale)); im.setMatrixAt(i, m4); });
         im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere(); group.add(im); inst.push(im);
@@ -181,6 +223,39 @@ export function createBuilder() {
     last = { field, buildings, sampleHeight: makeSampler(field) }; return last;
   }
   function setModules(mods) { modules = { ...defaultModules(), ...mods }; }
+  function setAsset(id, geometries) { assets.set(id, geometries.map((g) => stripGeo(g.clone ? g.clone() : g))); }
+  function levelGroup() {
+    const g = new THREE.Group(); g.name = 'Landscape'; g.userData.isLandscapeLevel = true;
+    if (terrain) {
+      const t = new THREE.Mesh(terrain.geometry.clone(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
+      t.name = 'Terrain'; t.userData.source = 'landscape'; g.add(t);
+    }
+    if (water?.visible) {
+      const w = new THREE.Mesh(water.geometry.clone(), WATER_MAT.clone());
+      w.scale.copy(water.scale); w.position.copy(water.position); w.name = 'Water'; w.userData.source = 'landscape'; g.add(w);
+    }
+    const cache = new Map();
+    const list = last?.buildings || [];
+    const cap = 300;
+    const seq = {};
+    list.slice(0, cap).forEach((b) => {
+      const key = b.assetId || b.type;
+      if (!cache.has(key)) {
+        const geos = geosFor(b.type, b.assetId).map((x) => x.clone());
+        cache.set(key, geos.length === 1 ? geos[0] : mergeGeometries(geos, false));
+      }
+      const src = cache.get(key); if (!src) return;
+      const mesh = new THREE.Mesh(src.clone(), BUILD_MAT.clone());
+      const label = b.type === 'house' ? 'House' : b.type === 'tower' ? 'Tower' : b.type === 'tree' ? 'Tree' : (b.type || 'Prop');
+      seq[label] = (seq[label] || 0) + 1;
+      mesh.name = `${label}_${String(seq[label]).padStart(3, '0')}`;
+      mesh.position.set(b.x, b.y, b.z); mesh.rotation.y = b.rot || 0; mesh.scale.setScalar(b.scale || 1);
+      mesh.userData.source = 'landscape'; mesh.userData.spawn = { type: b.type, assetId: b.assetId || null };
+      g.add(mesh);
+    });
+    if (list.length > cap) g.userData.spawnTruncated = list.length - cap;
+    return g;
+  }
   // flatten everything into plain meshes for OBJ/STL/PLY/GLB export
   function exportGroup({ buildings = true, water: withWater = true } = {}) {
     const g = new THREE.Group(); g.name = 'MeshForgeLandscape';
@@ -193,7 +268,7 @@ export function createBuilder() {
     }
     return g;
   }
-  return { group, build, setModules, exportGroup, get terrain() { return terrain; }, get last() { return last; } };
+  return { group, build, setModules, setAsset, exportGroup, levelGroup, get terrain() { return terrain; }, get last() { return last; } };
 }
 
 // ---------- random painted map ----------

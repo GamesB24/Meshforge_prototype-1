@@ -11,7 +11,8 @@
   <span class="brand">◆ MeshForge <small>7.0</small></span>
   <nav class="menus">
     <div class="menu" tabindex="0"><span>File</span><div class="drop-menu">
-      <button data-act="import">Import image…</button><button data-act="scene">Import scene (GLB / manifest)…</button><button data-act="rigimp">Import rigged character (GLB / glTF)…</button><hr>
+      <button data-act="newproj">New project</button><button data-act="openproj">Open project…</button><button data-act="saveproj">Save <kbd>Ctrl+S</kbd></button><button data-act="saveas">Save as…</button><hr>
+      <button data-act="import">Import image…</button><button data-act="scene">Import scene (GLB / manifest)…</button><button data-act="rigimp">Import rigged character (GLB / glTF)…</button><button data-act="samplekiosk">Load sample scene (kiosk)…</button><hr>
       <button data-act="glb">Export GLB (.glb)</button><button data-act="obj">Export OBJ (.obj)</button>
       <button data-act="stl">Export STL (.stl)</button><button data-act="ply">Export PLY (.ply)</button><hr>
       <button data-act="zip">Download model (.zip: mesh + preview)</button><hr><button data-act="selglb">Export selected object (.glb)</button><button data-act="scenejson">Export scene (scene.json + scene.glb)</button><button data-act="dup">Duplicate object <kbd>Shift+D</kbd></button><button data-act="del">Delete object <kbd>Delete</kbd></button><hr>
@@ -30,7 +31,13 @@
   </nav>
   <div class="tabs"><span class="tab on" id="tabGen" title="Image to 3D">Generate</span><span class="tab" id="tabLand" title="Paint a map into a 3D landscape">Landscape</span><span class="tab dim" title="Planned">Parts</span><span class="tab dim" title="Planned">Retopo</span><span class="tab" id="tabShader" title="Chibili materials, material paint and textures">Shader</span><span class="tab" id="tabUV" title="UV unwrap and 2D texture paint (split view)">UV</span><span class="tab dim" title="Planned">Script</span></div>
   <span class="grow"></span>
-  <button id="btnPlayGame" class="game-btn" title="Play Game inside Viewport (Alt+P / P)">▶ Play</button>
+  <div class="play-transport" id="playTransport" title="Play runs the current scene">
+    <button id="btnPlayGame" class="game-btn" title="Play the current scene (Alt+P)">▶</button>
+    <button id="btnPauseGame" class="game-btn alt" title="Pause">❚❚</button>
+    <button id="btnStopGame" class="game-btn stop" title="Stop and restore the scene (Esc)">■</button>
+    <button id="btnRestartGame" class="game-btn alt" title="Restart from the start of the timeline">↻</button>
+    <span id="playState">Edit</span>
+  </div>
   <button id="topVoiceBtn" class="ai-btn-icon" title="Voice Command Push-to-Talk (Hold or press V)">🎙</button>
   <button id="btnOpenAIConsole" class="ib" title="AI Agent Console & Settings">🤖 Agent</button>
   <div id="userAuthChip" class="auth-chip" title="Google / OpenAI Account & Agent Wallet"><span class="auth-avatar"></span><b id="authName">Guest</b><span id="authCredits" class="wallet-badge">500 C</span></div>
@@ -79,15 +86,29 @@
     <img id="photoOv" class="photo-ov" alt="original photo" hidden>
     <input id="rigFile" type="file" accept=".glb,.gltf" hidden>
     <input id="sceneFile" type="file" accept=".json,.glb,.gltf,application/json,model/gltf-binary" multiple hidden>
+    <input id="projectFile" type="file" accept=".meshforge,.json,application/json" hidden>
     <div class="vinfo" id="vinfo">User Perspective<br><small>No object</small></div>
     <label id="drop" class="drop">
       <input id="file" type="file" accept="image/*" hidden>
       <span>Drop a reference image anywhere in the viewport<br><small>or click to browse · single object, plain background works best</small></span>
     </label>
-    <div class="keys">Click select · G move · R rotate · S scale (X/Y/Z axis, Ctrl snap, Esc cancel) · Tab Edit Mode · Ctrl+Z undo · MMB orbit · Shift+MMB pan · Wheel zoom · Numpad 1/3/7 · . frame</div>
+    <div id="xform" class="xform" hidden>
+      <div class="xh"><b>Transform</b><button type="button" id="spaceBtn" title="Local or global gizmo axes">Global</button><label class="snap"><input id="snapOn" type="checkbox"> Snap</label></div>
+      <div class="xr" data-ch="position"><span>Location</span><input data-a="0" type="number" step="0.01"><input data-a="1" type="number" step="0.01"><input data-a="2" type="number" step="0.01"></div>
+      <div class="xr" data-ch="rotation"><span>Rotation</span><input data-a="0" type="number" step="1"><input data-a="1" type="number" step="1"><input data-a="2" type="number" step="1"></div>
+      <div class="xr" data-ch="scale"><span>Scale</span><input data-a="0" type="number" step="0.01"><input data-a="1" type="number" step="0.01"><input data-a="2" type="number" step="0.01"></div>
+      <div class="xtools"><span>Align</span><button type="button" data-align="x">X</button><button type="button" data-align="y">Y</button><button type="button" data-align="z">Z</button><button type="button" id="groundBtn" title="Rest the selection on Y = 0">Ground</button></div>
+      <div class="xsteps"><span>Steps</span><input id="snapMove" type="number" step="0.01" min="0.001" value="0.1" title="Move snap"><input id="snapRot" type="number" step="1" min="1" value="15" title="Rotate snap, degrees"><input id="snapScale" type="number" step="0.01" min="0.001" value="0.1" title="Scale snap"></div>
+      <div class="xh"><b>Behaviours</b><select id="behType"></select><button type="button" id="behAdd" title="Attach a behaviour to the active object">+</button></div>
+      <div id="behList"></div>
+    </div>
+    <div class="keys">Click select · Shift+click add · drag box select · G/R/S (X/Y/Z, Ctrl snap) · Esc clears selection · Alt+P play · Esc stop · Ctrl+Z undo</div>
     <div id="help" class="help" hidden><b>Keyboard shortcuts</b> <small>(click to close)</small>
       <table>
-        <tr><td>Left click</td><td>Select object / element (Shift = add/toggle)</td></tr>
+        <tr><td>Left click</td><td>Select object / element (Shift = add or toggle)</td></tr>
+        <tr><td>Drag (Select tool)</td><td>Box select objects or elements</td></tr>
+        <tr><td>Esc (Object Mode)</td><td>Clear the selection highlight</td></tr>
+        <tr><td>Alt+P / Esc while playing</td><td>Play or pause / stop and restore the scene</td></tr>
         <tr><td>Left drag (Select tool, Edit Mode)</td><td>Box select visible elements</td></tr>
         <tr><td>G / R / S</td><td>Move / Rotate / Scale with the mouse; click or Enter to confirm</td></tr>
         <tr><td>X / Y / Z (while moving)</td><td>Lock to an axis (press again to unlock)</td></tr>

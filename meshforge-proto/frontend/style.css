@@ -23,7 +23,15 @@ body{display:grid;grid-template-rows:28px 1fr 26px}
 .keys{position:absolute;bottom:6px;left:10px;color:#9a9a9a;font-size:11px;z-index:2}
 .drop{position:absolute;inset:40% 25% auto;padding:28px;border:1.5px dashed #6a6a6a;border-radius:8px;text-align:center;color:#bdbdbd;background:#2b2b2bcc;cursor:pointer;z-index:2}
 .drop.over{border-color:var(--orange)}.drop.hidden{display:none}.viewport.over{outline:2px solid var(--orange);outline-offset:-2px}
-.props{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:6px;display:flex;flex-direction:column;gap:6px}
+.props{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:6px;display:grid;grid-template-columns:34px minmax(0,1fr);align-content:start;gap:6px}
+#sideTabs{display:flex;flex-direction:column;gap:4px;position:sticky;top:0;grid-column:1;grid-row:1 / span 40}
+.props > *:not(#sideTabs){grid-column:2}
+#sideTabs button{width:28px;height:28px;background:var(--wid2);border:0;border-radius:4px;color:var(--text);cursor:pointer}
+#sideTabs button.on{background:var(--acc);color:#fff}
+body[data-side="object"] .props > details[data-side="edit"],body[data-side="object"] #editPanel{display:none}
+body[data-side="edit"] .props > details:not(#editPanel),body[data-side="edit"] .props > div:not(#sideTabs):not(#editPanel){display:none}
+body[data-side="sculpt"] .props > *:not(#sideTabs):not(#sculptPanel){display:none}
+body[data-side="land"] .props > *:not(#sideTabs):not(#landPanel){display:none}
 details{background:var(--area);border-radius:5px;padding:0 8px 6px}details:not([open]){padding-bottom:0}
 summary{padding:6px 0;font-weight:600;cursor:pointer;list-style:none}summary::before{content:"▸ ";color:var(--mute)}details[open] summary::before{content:"▾ "}
 .row{display:grid;grid-template-columns:86px 1fr auto;gap:6px;align-items:center;margin:4px 0}.row>span{color:var(--mute);text-align:right}.row.chk{display:flex;gap:6px}
@@ -61,7 +69,7 @@ button.btn{border:0;font:inherit;cursor:pointer}button.btn:disabled{opacity:.4;c
 /* v4: Landscape workspace */
 .tab{cursor:pointer}
 body.land .workspace{grid-template-columns:40px 1fr 330px}
-body.land .props>:not(#landPanel){display:none}
+body.land .props>:not(#landPanel):not(#sideTabs){display:none}
 body.land #selModes,body.land #mode,body.land .keys{display:none}
 #landPanel{display:flex;flex-direction:column;gap:6px}
 .palette{display:flex;gap:4px;align-items:center;margin:6px 0}.palette span{color:var(--mute);margin-left:6px}
@@ -80,7 +88,7 @@ body.land #selModes,body.land #mode,body.land .keys{display:none}
 .sculptron{align-self:stretch;background:#3a2f22;color:var(--orange);border:0;border-left:1px solid var(--line);padding:0 14px;font:600 12px inherit;cursor:pointer}
 .sculptron:hover{background:#4a3a28}.sculptron.on{background:var(--orange);color:#1d1d1d}
 #triCount.warn{background:#6a3a1a;color:#ffd0a0}
-body.sculpt .props>:not(#sculptPanel){display:none}
+body.sculpt .props>:not(#sculptPanel):not(#sideTabs){display:none}
 body.sculpt #selModes,body.sculpt .keys,body.sculpt #drop{display:none}
 body.sculpt #c{cursor:crosshair}
 #sculptPanel{display:flex;flex-direction:column;gap:6px}
@@ -96,7 +104,7 @@ body.sculpt #c{cursor:crosshair}
 .outliner .ohead{display:flex;align-items:center;gap:4px;padding:4px 6px;border-bottom:1px solid #444}.outliner .grow{flex:1}
 .outliner button{background:#333;border:1px solid #555;color:#ddd;border-radius:3px;cursor:pointer;padding:1px 5px}
 .outliner ul{list-style:none;margin:0;padding:2px 0;overflow:auto}
-.outliner li{display:flex;align-items:center;gap:5px;padding:2px 6px;cursor:pointer}.outliner li:hover{background:#333}.outliner li.sel{background:#5a3d1a;color:#fff}
+.outliner li{display:flex;align-items:center;gap:5px;padding:2px 6px;cursor:pointer}.outliner li:hover{background:#333}.outliner li.sel{background:#5a3d1a;color:#fff}.outliner li.active{box-shadow:inset 2px 0 0 #ff9a2e}
 .outliner li .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.outliner li.hid .lbl{opacity:.45}
 .outliner .eye{border:none;background:none;padding:0 2px}.outliner .badge{font-size:9px;padding:0 4px;border-radius:6px;background:#3d4a5c;color:#cfe}
 .outliner .oexp{display:flex;gap:6px;align-items:center;padding:4px 6px;border-top:1px solid #444}.outliner .oexp input{flex:1}
@@ -106,7 +114,7 @@ body.sculpt #c{cursor:crosshair}
 .tab{cursor:pointer}.tab.dim{cursor:default}#tabShader.on,#tabUV.on{box-shadow:inset 0 2px 0 var(--chib)}
 #shading .chib{color:var(--chib)}#shading .chib.on{background:var(--chib);color:#fff}
 .ws-panel{display:none;flex-direction:column;gap:6px}
-body.ws-shader .props>:not(#shaderPanel),body.ws-uv .props>:not(#shaderPanel):not(#uvPanel){display:none}
+body.ws-shader .props>:not(#shaderPanel):not(#sideTabs),body.ws-uv .props>:not(#shaderPanel):not(#uvPanel):not(#sideTabs){display:none}
 body.ws-shader #shaderPanel,body.ws-uv #shaderPanel{display:flex}
 body.ws-uv #uvPanel{display:flex}
 .ws-panel .acc{border-left:3px solid var(--chib)}
@@ -159,7 +167,7 @@ body.uvsplit #c{width:50%}
 .ai-btn-icon:hover{background:#2c313c;color:#fff}
 .ai-btn-icon.active{background:#e06c75;color:#fff;animation:pulse 1.2s infinite}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(224,108,117,.7)}70%{box-shadow:0 0 0 8px rgba(224,108,117,0)}100%{box-shadow:0 0 0 0 rgba(224,108,117,0)}}
-.ai-settings{background:#1a1d24;padding:8px;border-bottom:1px solid #2d3340;display:flex;flex-direction:column;gap:6px;font-size:11px}
+.ai-settings{background:#1a1d24;padding:8px;border-bottom:1px solid #2d3340;display:flex;flex-direction:column;gap:6px;font-size:11px;max-height:320px;overflow:auto}
 .ai-settings.hidden{display:none}
 .ai-set-row{display:flex;gap:6px;align-items:center}
 .ai-set-row label{width:110px;color:#828997}
@@ -223,3 +231,26 @@ body.in-game #c{cursor:crosshair}
 #tlDopesheetCanvas{display:block;width:100%;height:100%}
 .anim-playhead{position:absolute;top:0;bottom:0;width:2px;background:#e06c75;pointer-events:none}
 .anim-playhead::before{content:"▼";position:absolute;top:-2px;left:-4px;color:#e06c75;font-size:10px}
+
+/* Object-mode transform panel and scene play transport */
+.play-transport{display:flex;align-items:center;gap:3px;margin-right:6px}
+.play-transport .game-btn{min-width:26px;justify-content:center;padding:3px 7px}
+.play-transport .game-btn.alt{background:#3a4454}
+.play-transport .game-btn.stop{background:#8d3a3a}
+.play-transport .game-btn.on{outline:2px solid #d7ffd7}
+#playState{font-size:11px;color:#b7d7b7;min-width:72px}
+body.mf-sim #c{box-shadow:inset 0 0 0 2px #2e7d32}
+.xform{position:absolute;top:36px;left:8px;width:248px;background:#232323ee;border:1px solid #444;border-radius:4px;z-index:4;padding:6px 8px;font-size:11px;color:#ddd}
+.xform .xh,.xform .xr,.xform .xtools,.xform .xsteps{display:flex;align-items:center;gap:4px;margin:3px 0}
+.xform .xh b{flex:1}
+.xform .xr span,.xform .xtools span,.xform .xsteps span{width:58px;color:#aaa}
+.xform input[type=number]{width:52px;background:#1b1b1b;color:#eee;border:1px solid #555;border-radius:3px;padding:2px}
+.xform button,.xform select{background:#333;color:#eee;border:1px solid #555;border-radius:3px;cursor:pointer;padding:1px 6px}
+.xform .snap{display:flex;align-items:center;gap:3px;color:#ccc}
+.beh-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0}
+.xform .beh-row input,.xform .beh-row textarea,.xform .beh-row select{background:#1b1b1b;color:#eee;border:1px solid #555;border-radius:3px}
+.xform .beh-row input{width:64px}
+.xform .beh-row label{display:inline-flex;gap:3px;align-items:center;color:#aaa}
+.beh-row textarea{width:100%;min-height:48px;font:11px/1.3 monospace}
+.beh-row .rm{margin-left:auto}
+body.mf-sim .xform{display:none}
