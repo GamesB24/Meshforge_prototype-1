@@ -5,7 +5,7 @@ import { GLTFExporter } from 'three/addons/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/OBJExporter.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
 import { PLYExporter } from 'three/addons/PLYExporter.js';
-import { MAP, CLASSES, DEFAULTS, createBuilder, randomPaint, randomRegions } from './landscape.js';
+import { MAP, CLASSES, DEFAULTS, createBuilder, randomPaint, randomRegions, extent } from './landscape.js';
 
 export function initLandscape(ctx) {
   const { scene, controls } = ctx;
@@ -77,7 +77,8 @@ export function initLandscape(ctx) {
     inp.onchange = () => { set(path, inp.checked); schedule(30); }; $(host).appendChild(row);
   }
   slider('lTerrain', 'Grid', 'res', 64, 256, 32, (v) => `${v}²`, true);
-  slider('lTerrain', 'World size', 'size', 10, 100, 1, (v) => `${v} m`, true);
+  slider('lTerrain', 'Width', 'width', 5, 400, 1, (v) => `${v} m`, true);
+  slider('lTerrain', 'Depth', 'depth', 5, 400, 1, (v) => `${v} m`, true);
   slider('lTerrain', 'Sand height', 'base.sand', -3, 6, 0.05);
   slider('lTerrain', 'Grass height', 'base.grass', -3, 8, 0.05);
   slider('lTerrain', 'Water bed', 'base.water', -6, 2, 0.05);
@@ -107,7 +108,8 @@ export function initLandscape(ctx) {
   function rebuild() {
     clearTimeout(timer); const t0 = performance.now(); result = builder.build(state);
     const ms = performance.now() - t0, n = state.params.res;
-    if (UI.active) { status(`Landscape · ${n}×${n} grid · ${(2 * n * n).toLocaleString()} tris · ${result.buildings.length} buildings · rebuilt in ${ms.toFixed(0)} ms`); ctx.setInfo(`Landscape<br><small>${state.params.size} m · ${(2 * n * n).toLocaleString()} tris · ${result.buildings.length} buildings</small>`); }
+    const { width, depth } = extent(state.params);
+    if (UI.active) { status(`Landscape · ${width}×${depth} m · ${n}² grid · ${(2 * n * n).toLocaleString()} tris · ${result.buildings.length} spawned · rebuilt in ${ms.toFixed(0)} ms`); ctx.setInfo(`Landscape<br><small>${width}×${depth} m · ${(2 * n * n).toLocaleString()} tris · ${result.buildings.length} spawned</small>`); }
     return result;
   }
 
@@ -275,11 +277,11 @@ export function initLandscape(ctx) {
   function paintCanvas() { const c = document.createElement('canvas'); c.width = c.height = MAP; const g = c.getContext('2d'), im = g.createImageData(MAP, MAP); for (let i = 0; i < MAP * MAP; i++) im.data.set([...CLASSES[state.paint[i]].rgb, 255], i * 4); g.putImageData(im, 0, 0); return c; }
   $('lPpng').onclick = () => paintCanvas().toBlob((b) => save(b, `landscape_${state.params.seed}_paint.png`));
   function hmapDataURL() { if (!state.hmap) return null; const c = document.createElement('canvas'); c.width = c.height = MAP; const g = c.getContext('2d'), im = g.createImageData(MAP, MAP); for (let i = 0; i < MAP * MAP; i++) { const v = Math.round(state.hmap[i] * 255); im.data.set([v, v, v, 255], i * 4); } g.putImageData(im, 0, 0); return c.toDataURL('image/png'); }
-  function projectJSON() { return JSON.stringify({ format: 'meshforge-landscape', version: 1, params: state.params, regions: state.regions, paint: paintCanvas().toDataURL('image/png'), heightmap: hmapDataURL() }, null, 1); }
+  function projectJSON() { return JSON.stringify({ format: 'meshforge-landscape', version: 1, params: state.params, regions: state.regions, extraSpawners: state.extraSpawners || [], paint: paintCanvas().toDataURL('image/png'), heightmap: hmapDataURL() }, null, 1); }
   async function loadProject(text) {
     const j = typeof text === 'string' ? JSON.parse(text) : text; if (j.format !== 'meshforge-landscape') throw new Error('Not a MeshForge landscape file');
     const d = DEFAULTS(); state.params = { ...d, ...j.params, base: { ...d.base, ...j.params?.base }, scatter: { ...d.scatter, ...j.params?.scatter } };
-    state.regions = j.regions || []; UI.sel = -1;
+    state.regions = j.regions || []; state.extraSpawners = j.extraSpawners || []; UI.sel = -1; renderSpawners();
     paintFromRGBA(await imageToData(j.paint));
     if (j.heightmap) { const hd = await imageToData(j.heightmap); state.hmap = new Float32Array(MAP * MAP); for (let i = 0; i < MAP * MAP; i++) state.hmap[i] = hd[i * 4] / 255; } else state.hmap = null;
     syncAll(); rebuild(); status('Opened landscape project');
@@ -289,7 +291,28 @@ export function initLandscape(ctx) {
   $('lJson').onchange = async (e) => { const f = e.target.files[0]; if (f) try { await loadProject(await f.text()); } catch (err) { status('Open failed: ' + err.message); } e.target.value = ''; };
 
   // ---------- mode switching ----------
-  function frame() { const s = state.params.size, cam = ctx.camera(); controls.target.set(0, 0, 0); cam.position.set(s * 0.75, s * 0.7, s * 0.9); if (cam.isOrthographicCamera) ctx.setOrthoSize(s * 0.6); controls.update(); }
+  function frame() { const { width, depth } = extent(state.params); const s = Math.max(width, depth), cam = ctx.camera(); controls.target.set(0, 0, 0); cam.position.set(s * 0.75, s * 0.7, s * 0.9); if (cam.isOrthographicCamera) ctx.setOrthoSize(s * 0.6); controls.update(); }
+  state.extraSpawners = state.extraSpawners || [];
+  const spawnHost = document.createElement('div'); spawnHost.id = 'lSpawnList'; $('lBuild').appendChild(spawnHost);
+  const spawnBtns = document.createElement('div'); spawnBtns.className = 'row';
+  spawnBtns.innerHTML = `<button class="btn" id="lAddTree" type="button">Add trees</button><button class="btn" id="lAddSel" type="button">Add selected mesh</button><button class="btn" id="lUseLevel" type="button">Use as level ground</button>`;
+  $('lBuild').appendChild(spawnBtns);
+  function renderSpawners() {
+    const rules = state.extraSpawners || [];
+    spawnHost.innerHTML = rules.map((r, i) => `<div class="row"><b>${r.name || r.kind}</b> count <input data-i="${i}" data-k="count" type="number" min="0" max="400" value="${r.count ?? 0}" style="width:52px"> scale <input data-i="${i}" data-k="scaleMin" type="number" step="0.1" value="${r.scaleMin ?? 0.7}" style="width:46px"><input data-i="${i}" data-k="scaleMax" type="number" step="0.1" value="${r.scaleMax ?? 1.4}" style="width:46px"><button type="button" data-del="${i}">×</button></div>`).join('')
+      || '<div class="hint0">Houses follow the sliders above. Add trees, or turn the selected scene mesh into a spawn type.</div>';
+    spawnHost.querySelectorAll('input').forEach((inp) => { inp.onchange = () => { const rule = state.extraSpawners[+inp.dataset.i]; if (!rule) return; rule[inp.dataset.k] = +inp.value; schedule(40); }; });
+    spawnHost.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { state.extraSpawners.splice(+b.dataset.del, 1); renderSpawners(); schedule(30); }; });
+  }
+  function addSpawner(rule) {
+    state.extraSpawners.push({ enabled: true, count: 12, scaleMin: 0.7, scaleMax: 1.4, rotate: true, maxSlope: 28, paints: ['grass'], seed: state.params.seed, waterMargin: 0.1, ...rule, id: rule.id || `sp_${state.extraSpawners.length + 1}` });
+    renderSpawners(); rebuild();
+    return state.extraSpawners[state.extraSpawners.length - 1];
+  }
+  renderSpawners();
+  $('lAddTree').onclick = () => addSpawner({ kind: 'tree', name: 'Trees', count: 16 });
+  $('lAddSel').onclick = () => window.MeshForge?.captureSpawn?.();
+  $('lUseLevel').onclick = () => window.MeshForge?.useAsLevel?.();
   function enter() {
     if (UI.active) return; UI.active = true; saved = { pos: ctx.camera().position.clone(), tgt: controls.target.clone(), far: ctx.camera().far };
     document.body.classList.add('land'); panel.hidden = false; builder.group.visible = true;
@@ -316,7 +339,8 @@ export function initLandscape(ctx) {
       else { if (opts.seed != null) state.params.seed = opts.seed; syncAll(); rebuild(); }
       return { group: builder.group, terrain: builder.terrain, sampleHeight: result.sampleHeight, buildings: result.buildings, field: result.field, state };
     },
-    rebuild, randomize, enter, exit, frame, get active() { return UI.active; }, get terrain() { return builder.terrain; }, get state() { return state; }, get result() { return result; },
+    rebuild, randomize, enter, exit, frame, addSpawner, renderSpawners, levelGroup: () => builder.levelGroup(), setAsset: (id, geos) => builder.setAsset(id, geos),
+    get active() { return UI.active; }, get terrain() { return builder.terrain; }, get state() { return state; }, get result() { return result; },
     sampleHeight: (x, z) => result?.sampleHeight(x, z) ?? 0,
     addRegion: (r) => { const reg = addRegion({ type: r.type || 'poly', pts: r.pts }); Object.assign(reg, r); renderRegions(); rebuild(); return reg; },
     paintCircle: (u, v, size, c) => { const s = UI.size; UI.size = size; dab(u, v, c); UI.size = s; drawPaint(); schedule(10); },

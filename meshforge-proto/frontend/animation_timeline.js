@@ -419,6 +419,30 @@ export function createAnimationTimeline(ctx) {
     bakeAnimationClip,
     renderDopesheet,
     isAutoKey: () => S.autoKey,
+    exportKeys() {
+      const keys = [];
+      for (const [uuid, data] of S.keyframeData) {
+        const obj = objectByUUID(uuid);
+        if (!obj) continue;
+        const used = ['position', 'rotation', 'scale'].some((k) => data[k]?.length);
+        if (!used) continue;
+        keys.push({ name: obj.name, id: obj.userData.sceneId || null, data: { position: data.position, rotation: data.rotation, scale: data.scale } });
+      }
+      return { fps: S.fps, start: S.startFrame, end: S.endFrame, frame: S.currentFrame, keys };
+    },
+    importKeys(pack, find) {
+      S.keyframeData.clear();
+      if (!pack) return;
+      if (pack.fps) S.fps = pack.fps;
+      if (pack.start != null) S.startFrame = pack.start;
+      if (pack.end != null) S.endFrame = pack.end;
+      for (const k of pack.keys || []) {
+        const obj = find?.(k);
+        if (!obj) continue;
+        S.keyframeData.set(obj.uuid, { position: k.data.position || [], rotation: k.data.rotation || [], scale: k.data.scale || [] });
+      }
+      setFrame(pack.frame || 0);
+    },
     isPlaying: () => S.playing,
     getFrame: () => S.currentFrame,
     getStartFrame: () => S.startFrame,

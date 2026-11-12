@@ -121,3 +121,26 @@ Same objects through generate → sculpt → edit → landscape → timeline →
 ## Round two recommendation
 
 Finish phase 2 (origin/pivot and live statistics) and start phase 3 with linked select, extrude, and delete, on the welded mesh `editor.js` already builds. Leave the unified world and the asset spawner until those edits undo cleanly and Play still restores the scene. The agent should grow only after the outliner can rename objects, or it will keep addressing meshes by fragile display names.
+
+## Round 2 (this branch, after the Play / Object Mode work)
+
+Shipped here:
+
+- `.meshforge` project JSON (objects, edited geometry, transforms, materials, hierarchy, behaviours, face sets, timeline keys, landscape paint/settings, camera), File → New / Open / Save / Save As, Ctrl+S, IndexedDB autosave and restore unless `?noautosave=1`.
+- Landscape width and depth in metres. Extra spawn rules (trees, or the selected mesh) with count and scale. **Use as level ground** copies terrain, water and spawned meshes into a `Landscape` group in the main scene so they select, edit and play with everything else.
+- Outliner lists groups and skips helper meshes parented under a mesh (wire and selection shells). Loading the kiosk sample replaces the previous sample group instead of appending another copy.
+- Edit Mode: Alt+click edge loop, Alt+Shift+click edge ring, face loop, L / Ctrl+L linked, face sets.
+- Right-hand icon strip switches Object, Edit, Sculpt and Landscape property panels.
+- Agent tools `build_level`, `set_behaviour` and `list_objects` act on the open scene. “Make a game” builds a landscape level in the scene rather than the old shooter.
+
+### Pose Mode, rigging and weight paint (not this round)
+
+`frontend/rig.js` already plays a glTF skin, scrubs clips and poses bones that came in with a file. A real Pose / Weight Paint workflow is a separate system and is not half-built here. Next round should add:
+
+- An armature object: a list of bones (head, tail, parent, roll) stored on `userData.armature`, drawn as lines in the viewport.
+- Armature edit: add bone, extrude (new bone parented to the active one), and reparent, with undo.
+- Parent mesh to armature: automatic weights by closest-bone distance, written to `geometry.attributes.skinIndex` / `skinWeight` and a `SkinnedMesh`. That is enough for the existing rig player to deform it.
+- Weight Paint mode: one brush (add / subtract / smooth) on the active bone’s weights, heatmap colours, undo per stroke.
+- Pose Mode: select a bone, rotate it, insert the pose as timeline keys (the timeline already stores Euler rotation per object; bone poses need a parallel track map). Play evaluates those tracks. Save/load writes the armature and the weight attributes next to the mesh geometry in the `.meshforge` file.
+
+Do that as one slice. A bone list without weights, or weights without pose playback, is not worth merging.

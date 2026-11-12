@@ -18,6 +18,7 @@ import { createGameMode } from './game_mode.js';
 import { createAnimationTimeline } from './animation_timeline.js';
 import { buildKioskSample } from './sample_scene.js';
 import { BEHAVIOUR_TYPES, listBehaviours, setBehaviours } from './behaviours.js';
+import { createProject } from './project.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -134,7 +135,7 @@ function updateInfo() {
   refreshXform?.();
   if (land?.active) return;
   let tris = 0; model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay) tris += Math.min(o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count, o.geometry.drawRange.count) / 3; });
-  const objs = model ? model.children.filter((o) => o.isMesh || o.children.length).length || 1 : 0;
+  const objs = model ? contentList(model, 0, []).filter((x) => x.obj.isMesh).length : 0;
   if (model?.userData.isScene) model.children.forEach((o) => { // Sculpt drops vertex colours: fall back to the object's average colour
     const m = o.userData.orig || o.material; if (!o.isMesh || !m || o.geometry.attributes.color || !m.vertexColors) return;
     m.vertexColors = false; if (o.userData.avgColor != null && m.color) m.color.setHex(o.userData.avgColor); m.needsUpdate = true; });
@@ -144,6 +145,7 @@ function updateInfo() {
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (gameMode?.handleKey?.(e)) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); project?.save(); return; }
   if (sculpt?.active && sculpt.handleKey(e)) return;
   if (!gameMode?.isActive?.() && !land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
     if (e.key === 'Delete') { if (editor.sel) { e.preventDefault(); deleteObject(); return; } }
@@ -191,7 +193,7 @@ document.querySelectorAll('.tool[data-tool]').forEach((b) => b.onclick = () => s
 editor = createEditor({
   scene, controls, canvas, renderer, camera: () => camera, getModel: () => (land?.active ? null : model), jobId: () => state.current, updateInfo: () => updateInfo(),
   status: (m) => { $('progMsg').textContent = m; },
-  setModeUI: (m) => { $('mode').value = m; $('selModes').hidden = m !== 'edit'; },
+  setModeUI: (m) => { $('mode').value = m; $('selModes').hidden = m !== 'edit'; if (typeof curWS === 'undefined' || curWS !== 'land') { document.body.dataset.side = m === 'edit' ? 'edit' : m === 'sculpt' ? 'sculpt' : 'object'; syncSideTabs?.(); } },
   sculptEnter: (m) => sculpt.enter(m), sculptExit: () => sculpt.exit(), sculptGeometry: (m) => sculpt?.geometryFor(m), sculptInfo: () => sculpt?.info(),
   setSelModeUI: (m) => document.querySelectorAll('#selModes button').forEach((b) => b.classList.toggle('on', b.dataset.v === m)),
   blockPointer: (e) => (mats?.blockPointer(e) || window.__mfBlockPointer?.(e)), exportMaterial: (m, g) => mats?.exportMaterial(m, g),
@@ -242,6 +244,8 @@ function setWorkspace(w) {
   else if (prev === 'shader' || prev === 'uv') { if (state.prevShading) setShading(state.prevShading); state.prevShading = null; }
   if (w === 'uv') window.__mfUV?.show(true);
   if (on && state.shading === 'chibili') applyLandShading();
+  document.body.dataset.side = on ? 'land' : (editor?.mode === 'sculpt' ? 'sculpt' : editor?.mode === 'edit' ? 'edit' : 'object');
+  syncSideTabs?.();
   if (!on) updateInfo(); requestAnimationFrame(resize);
 }
 $('tabLand').onclick = () => setWorkspace('land'); $('tabGen').onclick = () => setWorkspace('gen');
@@ -414,9 +418,15 @@ async function refreshHistory() {
     li.querySelector('.del').onclick = async (e) => { e.stopPropagation(); await fetch(`/api/jobs/${j.id}`, { method: 'DELETE' }); refreshHistory(); };
   });
 }
-loadConfig(); refreshHistory().then(async () => {  // reopen the latest result
-  if (new URLSearchParams(location.search).get('scene')) return;
-  try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ }
+loadConfig();
+const bootJobs = refreshHistory().then(async () => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('scene')) return 'scene';
+  if (q.has('noautosave')) {
+    try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ }
+    return 'jobs';
+  }
+  return 'maybe-autosave';
 });
 // ---------- export buttons + menus ----------
 function exportAny(fmt) { if (land?.active && land.exportAs) return land.exportAs(fmt); return editor.exportAs(fmt); }
@@ -501,33 +511,60 @@ function loadKioskSample() {
   if (gameMode.isActive()) gameMode.stopPlay();
   if (land?.active) setWorkspace('gen');
   const parts = buildKioskSample();
-  for (const mesh of parts) addSceneMesh(mesh, { label: mesh.name, source: 'sample', behaviours: mesh.userData.behaviours });
+  const names = new Set(parts.map((p) => p.name));
+  let root = model;
+  if (!root) {
+    root = sceneIO.ensureRoot(false);
+    if (!scene.children.includes(root)) scene.add(root);
+  }
+  for (const c of [...root.children]) {
+    if ((c.isGroup && c.name === 'Kiosk sample') || (c.isMesh && names.has(c.name) && c.userData.source === 'sample')) root.remove(c);
+  }
+  const folder = new THREE.Group();
+  folder.name = 'Kiosk sample';
+  folder.userData.source = 'sample';
+  root.add(folder);
+  for (const mesh of parts) {
+    mesh.userData.source = 'sample';
+    mesh.userData.sceneId = mesh.userData.sceneId || mesh.name;
+    mesh.userData.label = mesh.name;
+    folder.add(mesh);
+  }
+  applyShading();
+  $('drop').classList.add('hidden');
+  document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
   editor.select(null);
   const player = parts.find((p) => p.name === 'Player');
   if (player) editor.select(player);
-  frameModel();
+  frameModel(); updateInfo();
   $('progMsg').textContent = `Loaded the kiosk sample (${parts.length} objects). Press Play to run this scene.`;
   return parts.map((p) => p.name);
 }
 function sceneObjects() { return model ? model.children.filter((o) => o.isMesh && !o.userData.isOverlay) : []; }
-function outlineObjects() {
-  if (!model || land?.active) return [];
-  const list = [];
-  model.traverse((o) => { if (o.isMesh && !o.userData.isOverlay && !o.userData.isSelection) list.push(o); });
-  return list;
+function contentList(root, depth, out) {
+  if (!root) return out;
+  for (const c of root.children) {
+    if (!c || c.userData?.isOverlay || c.userData?.isWireOverlay || c.userData?.isSelection) continue;
+    if (c.isMesh && c.parent?.isMesh) continue;
+    if (!(c.isMesh || c.isGroup)) continue;
+    out.push({ obj: c, depth });
+    if (c.isGroup) contentList(c, depth + 1, out);
+  }
+  return out;
 }
+function outlineObjects() { return model ? contentList(model, 0, []) : []; }
 var olistKey = '';
 function refreshOutliner() {
   const el = $('outliner'); if (!el) return;
-  const objs = outlineObjects();
-  el.hidden = !objs.length;
+  const items = outlineObjects();
+  el.hidden = !items.length;
   const exp = el.querySelector('.oexp'); if (exp) exp.hidden = !model?.userData.isScene;
-  if (!objs.length) { olistKey = ''; return; }
-  const key = objs.map((o) => `${o.uuid}${o.visible ? 1 : 0}${editor?.isSelected?.(o) ? 1 : 0}${o === editor?.sel ? 'a' : ''}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
+  if (!items.length) { olistKey = ''; return; }
+  const key = items.map(({ obj: o, depth }) => `${depth}${o.uuid}${o.visible ? 1 : 0}${editor?.isSelected?.(o) ? 1 : 0}${o === editor?.sel ? 'a' : ''}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  $('olist').innerHTML = objs.map((o, i) => `<li data-i="${i}" class="${editor.isSelected(o) ? 'sel' : ''} ${o === editor.sel ? 'active' : ''} ${o.visible ? '' : 'hid'}"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name)}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
+  $('olist').innerHTML = items.map(({ obj: o, depth }, i) => `<li data-i="${i}" class="${editor.isSelected(o) ? 'sel' : ''} ${o === editor.sel ? 'active' : ''} ${o.visible ? '' : 'hid'}" style="padding-left:${6 + depth * 12}px"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name || (o.isGroup ? 'Group' : 'Object'))}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
   $('olist').querySelectorAll('li').forEach((li) => {
-    const o = objs[+li.dataset.i];
+    const o = items[+li.dataset.i].obj;
     li.onclick = (e) => {
       if (e.target.classList.contains('eye')) {
         o.visible = !o.visible;
@@ -630,6 +667,48 @@ async function sendLandscapeToScene(opts = {}) {
   applyShading(); setShading('color'); frameModel(); updateInfo(); $('drop').classList.add('hidden');
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   return { id: m.userData.sceneId, label: m.name };
+}
+function sendLandscapeToLevel() {
+  if (!land?.levelGroup) { $('progMsg').textContent = 'Landscape is not ready'; return null; }
+  if (!land.result) land.rebuild();
+  const group = land.levelGroup();
+  if (!group || !group.children.length) { $('progMsg').textContent = 'Build a landscape first'; return null; }
+  if (land.active) setWorkspace('gen');
+  let root = model;
+  if (!root) {
+    root = sceneIO.ensureRoot(false);
+    if (!scene.children.includes(root)) scene.add(root);
+  }
+  const old = root.children.find((c) => c.userData?.isLandscapeLevel || c.name === 'Landscape');
+  if (old) root.remove(old);
+  root.add(group);
+  applyShading();
+  $('drop').classList.add('hidden');
+  document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  const terrain = group.children.find((c) => c.name === 'Terrain');
+  if (editor.mode !== 'object') editor.setMode('object');
+  editor.select(terrain || group);
+  frameModel(); updateInfo();
+  const note = group.userData.spawnTruncated ? ` (${group.userData.spawnTruncated} extra instances were left out of the individual copies)` : '';
+  $('progMsg').textContent = `Landscape is now part of the scene · ${group.children.length} objects${note}`;
+  return { name: group.name, children: group.children.map((c) => c.name) };
+}
+function captureSpawn() {
+  const src = editor.sel;
+  if (!src?.isMesh) { $('progMsg').textContent = 'Select a mesh, then add it as a spawn type'; return false; }
+  const id = `asset_${src.name || src.uuid}`;
+  land.setAsset(id, [src.geometry]);
+  land.addSpawner({ kind: id, assetId: id, name: src.name || 'Mesh', count: 8, paints: ['grass', 'sand'], maxSlope: 30, scaleMin: 0.8, scaleMax: 1.2 });
+  if (!land.active) setWorkspace('land');
+  $('progMsg').textContent = `${src.name} can now be scattered on the landscape`;
+  return true;
+}
+function buildLevel(opts = {}) {
+  const width = opts.width || 48, depth = opts.depth || 48;
+  land.generate({ seed: opts.seed ?? (Math.floor(Math.random() * 9000) + 1), randomize: opts.randomize !== false, regions: true, params: { width, depth, size: Math.max(width, depth) } });
+  const trees = opts.trees ?? 14;
+  if (trees > 0) land.addSpawner({ kind: 'tree', name: 'Trees', count: trees, paints: ['grass'], maxSlope: 26, scaleMin: 0.6, scaleMax: 1.6 });
+  return sendLandscapeToLevel();
 }
 Object.assign(window.MeshForge, {
   loadScene: (src, opts) => sceneIO.loadScene(src, opts),
@@ -776,6 +855,9 @@ Object.assign(window.MeshForge, {
   },
   addSky: () => addPrimitive('sky').name, addWater: () => addPrimitive('water').name, offline: () => !!state.offline,
   auth, agent: agentBridge, companion, game: gameMode, anim: animTimeline,
+  useAsLevel: () => sendLandscapeToLevel(),
+  captureSpawn, buildLevel,
+  project: null,
   loadSample: (name = 'kiosk') => (name === 'kiosk' ? loadKioskSample() : null),
   getSelection: () => editor.selection().map((o) => ({ id: o.userData.sceneId ?? o.uuid, name: o.name })),
   setBehaviours: (id, list) => { const o = findObject(id); if (!o) return false; setBehaviours(o, list); updateInfo(); return true; },
@@ -814,3 +896,101 @@ $('rigFile').onchange = async (e) => { const f = e.target.files[0]; e.target.val
 window.MeshForge.loadRig = async (src) => { const m = await window.MeshForge.loadGLB(src); if (!rig.info().skinned) $('progMsg').textContent = 'Loaded, but that file has no skin (no rig): it opened as a normal model'; return rig.info(); };
 window.MeshForge.rig = { info: () => rig.info(), play: () => rig.play(), pause: () => rig.pause(), stop: () => rig.stop(), scrub: (t) => rig.scrub(t), setClip: (i) => rig.setClip(i), selectBone: (i) => rig.selectBone(i), poseBone: (name, euler) => rig.poseBone(name, euler), restPose: () => rig.restPose(), weightView: (on) => rig.weightView(on), showBones: (on) => rig.showBones(on) };
 window.__meshforge.rig = rig;
+
+function newProject() {
+  if (gameMode.isActive()) gameMode.stopPlay();
+  editor.reset();
+  if (model) { scene.remove(model); model = null; }
+  animTimeline.importKeys({ keys: [], fps: 30, start: 0, end: 120, frame: 0 }, () => null);
+  $('drop').classList.remove('hidden');
+  updateInfo();
+  $('progMsg').textContent = 'New project';
+}
+const project = createProject({
+  THREE,
+  getModel: () => model,
+  status: (m) => { $('progMsg').textContent = m; },
+  getCamera: () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: persp.fov }),
+  setCamera,
+  materialsJSON: () => mats.libJSON(),
+  applyMaterials: (list) => mats.loadLib(list),
+  timelineJSON: () => animTimeline.exportKeys(),
+  applyTimeline: (pack, find) => animTimeline.importKeys(pack, find),
+  landscapeJSON: () => { try { return JSON.parse(land.projectJSON()); } catch { return null; } },
+  applyLandscape: (data) => land.loadProject(data),
+  clearModel() { editor.reset(); if (model) { scene.remove(model); model = null; } },
+  ensureModel() {
+    if (!model) { model = new THREE.Group(); model.name = 'Scene'; model.userData.isScene = true; model.userData.norm = new THREE.Matrix4(); scene.add(model); }
+    return model;
+  },
+  afterLoad() {
+    applyShading(); updateInfo(); $('drop').classList.add('hidden');
+    document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
+  },
+  download: (blob, name) => editor.save(blob, name),
+  pickFile: () => $('projectFile').click(),
+});
+window.MeshForge.project = project;
+$('projectFile').onchange = async (e) => {
+  const f = e.target.files?.[0]; e.target.value = '';
+  if (!f) return;
+  try { await project.loadText(await f.text()); $('progMsg').textContent = 'Opened ' + f.name; }
+  catch (err) { $('progMsg').textContent = 'Open failed: ' + err.message; }
+};
+Object.assign(ACTIONS, { newproj: () => newProject(), openproj: () => project.open(), saveproj: () => project.save(), saveas: () => project.saveAs() });
+setInterval(() => { if (model && !gameMode.isActive()) project.writeAutosave(); }, 20000);
+addEventListener('beforeunload', () => { if (model) project.writeAutosave(); });
+bootJobs.then(async (mode) => { if (mode === 'maybe-autosave') { const ok = await project.maybeRestore(); if (!ok) { try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ } } } });
+
+function syncSideTabs() {
+  document.querySelectorAll('#sideTabs button').forEach((b) => b.classList.toggle('on', b.dataset.side === document.body.dataset.side));
+}
+function setSide(side) {
+  document.body.dataset.side = side;
+  syncSideTabs();
+  if (side === 'land') { if (curWS !== 'land') setWorkspace('land'); }
+  else if (side === 'sculpt') { if (editor.mode !== 'sculpt') editor.setMode('sculpt'); }
+  else if (side === 'edit') { if (curWS === 'land') setWorkspace('gen'); if (editor.mode !== 'edit') editor.setMode('edit'); }
+  else { if (curWS === 'land') setWorkspace('gen'); if (editor.mode !== 'object') editor.setMode('object'); }
+}
+function installSideTabs() {
+  const props = document.querySelector('.props');
+  const strip = document.createElement('div');
+  strip.id = 'sideTabs';
+  strip.innerHTML = `<button type="button" data-side="object" title="Object">◇</button><button type="button" data-side="edit" title="Edit">▦</button><button type="button" data-side="sculpt" title="Sculpt">◉</button><button type="button" data-side="land" title="Landscape">⌂</button>`;
+  props.prepend(strip);
+  strip.onclick = (e) => { const b = e.target.closest('button'); if (b) setSide(b.dataset.side); };
+  const edit = document.createElement('div');
+  edit.id = 'editPanel';
+  edit.innerHTML = `<details open><summary>Selection</summary>
+    <div class="row"><button class="btn" id="edLoop" type="button">Edge loop</button><button class="btn" id="edRing" type="button">Edge ring</button></div>
+    <div class="row"><button class="btn" id="edFace" type="button">Face loop</button><button class="btn" id="edLink" type="button">Linked</button></div>
+    <div class="hint0">Alt+click a loop. Alt+Shift+click a ring. L selects the linked island.</div>
+  </details>
+  <details open><summary>Face sets</summary>
+    <div class="row"><button class="btn" id="edSetNew" type="button">Set from selection</button></div>
+    <div class="row"><select id="edSets"></select><button class="btn" id="edSetSel" type="button">Select</button></div>
+  </details>`;
+  props.appendChild(edit);
+  edit.querySelector('#edLoop').onclick = () => editor.runStoredLoop('loop');
+  edit.querySelector('#edRing').onclick = () => editor.runStoredLoop('ring');
+  edit.querySelector('#edFace').onclick = () => editor.runStoredLoop('face');
+  edit.querySelector('#edLink').onclick = () => editor.selectLinked();
+  edit.querySelector('#edSetNew').onclick = () => { const id = editor.createFaceSet(); const sel = edit.querySelector('#edSets'); const names = editor.faceSetNames(); sel.innerHTML = names.map((n, i) => `<option value="${i}">${n}</option>`).join(''); sel.value = String(id); };
+  edit.querySelector('#edSetSel').onclick = () => editor.selectFaceSet(+edit.querySelector('#edSets').value || 0);
+}
+installSideTabs();
+document.body.dataset.side = 'object';
+syncSideTabs();
+const _setWorkspace = setWorkspace;
+// keep the side tab in step with the workspace
+const origSet = setWorkspace;
+window.MeshForge.addPlane = (w = 2, d = 2, sw = 4, sh = 4) => {
+  if (land?.active) setWorkspace('gen');
+  const geo = new THREE.PlaneGeometry(w, d, sw, sh); geo.rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.6, side: THREE.DoubleSide }));
+  mesh.name = 'Grid';
+  addSceneMesh(mesh, { label: 'Grid', source: 'primitive' });
+  editor.select(mesh);
+  return mesh.name;
+};

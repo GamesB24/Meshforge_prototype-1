@@ -9,6 +9,7 @@ import { STLExporter } from 'three/addons/STLExporter.js';
 import { PLYExporter } from 'three/addons/PLYExporter.js';
 import { copyData } from './mfdata.js';
 import { writeOBJBundle } from './objmtl.js';
+import { buildAdjacency, edgeLoop, edgeRing, faceLoop, linkedFaces } from './editselect.js';
 
 const ORANGE = new THREE.Color(0xff9a2e), DARK = new THREE.Color(0x101010), EDGE = new THREE.Color(0x1a1a1a), WHITE_V = new THREE.Color(0xffd27a);
 const AXIS = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
@@ -91,6 +92,7 @@ export function createEditor(ctx) {
     if (S.mode !== 'object') return;
     const list = S.selList.filter((o) => o && o.parent);
     list.forEach((obj, i) => {
+      if (!obj.isMesh) return;
       const active = i === list.length - 1;
       let mesh;
       if (obj.isSkinnedMesh) {
@@ -339,6 +341,11 @@ export function createEditor(ctx) {
     const fg = new THREE.BufferGeometry(); fg.setAttribute('position', posAttr); fg.setIndex([]);
     E2.faces = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({ color: ORANGE, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
     for (const o of [E2.points, E2.lines, E2.faces]) { o.userData.isOverlay = true; o.raycast = () => {}; o.frustumCulled = false; o.renderOrder = 2; mesh.add(o); }
+    E2.adj = buildAdjacency(E2);
+    const stored = mesh.userData.faceSetIds;
+    E2.faceSetIds = stored && stored.length === E2.nt ? stored : new Int32Array(E2.nt);
+    mesh.userData.faceSetIds = E2.faceSetIds;
+    mesh.userData.faceSetNames = mesh.userData.faceSetNames || ['(none)'];
     return E2;
   }
   function destroyEdit() {
@@ -640,9 +647,89 @@ export function createEditor(ctx) {
       return;
     }
     if (d.p.distanceTo(p) > 4) return;                  // it was an orbit drag
+    if (S.mode === 'edit' && e.altKey) { selectLoopAt(p, e.shiftKey); return; }
     if (S.mode === 'edit') pickElement(p, e.shiftKey); else pickObject(p, e.shiftKey);
   });
 
+  function firstSelectedEdge() {
+    if (!E) return -1;
+    for (let e = 0; e < E.ne; e++) if (E.selE[e]) return e;
+    for (let t = 0; t < E.nt; t++) if (E.selF[t]) { for (let k = 0; k < 3; k++) if (E.triEdges[t * 3 + k] >= 0) return E.triEdges[t * 3 + k]; }
+    return -1;
+  }
+  function selectLoopAt(p, ring) {
+    pickElement(p, false);
+    const edge = firstSelectedEdge();
+    if (edge < 0) { status('Alt+click an edge or face'); return; }
+    if (S.selMode === 'face') {
+      const faces = faceLoop(E, edge);
+      E.selF.fill(0); for (const t of faces) E.selF[t] = 1;
+      refreshOverlay(false); updateGizmo();
+      status(`Face loop · ${faces.length} faces`);
+      return;
+    }
+    const ids = ring ? edgeRing(E, edge) : edgeLoop(E, edge);
+    if (S.selMode !== 'edge') setSelMode('edge');
+    E.selE.fill(0); for (const id of ids) E.selE[id] = 1;
+    refreshOverlay(false); updateGizmo();
+    status(`${ring ? 'Edge ring' : 'Edge loop'} · ${ids.length} edges`);
+  }
+  function selectLinked() {
+    if (!E) return;
+    const seeds = [];
+    if (S.selMode === 'face') { for (let t = 0; t < E.nt; t++) if (E.selF[t]) seeds.push(t); }
+    else {
+      const sv = new Set(selectedVerts());
+      for (let t = 0; t < E.nt; t++) if (sv.has(E.tris[t * 3]) || sv.has(E.tris[t * 3 + 1]) || sv.has(E.tris[t * 3 + 2])) seeds.push(t);
+    }
+    if (!seeds.length) { status('Select part of an island first, then press L'); return; }
+    const faces = linkedFaces(E, seeds);
+    if (S.selMode === 'vert') { E.selV.fill(0); for (const t of faces) for (let k = 0; k < 3; k++) E.selV[E.tris[t * 3 + k]] = 1; }
+    else if (S.selMode === 'edge') { E.selE.fill(0); for (const t of faces) for (let k = 0; k < 3; k++) { const e = E.triEdges[t * 3 + k]; if (e >= 0) E.selE[e] = 1; } }
+    else { if (S.selMode !== 'face') setSelMode('face'); E.selF.fill(0); for (const t of faces) E.selF[t] = 1; }
+    refreshOverlay(false); updateGizmo();
+    status(`Linked · ${faces.length} faces`);
+  }
+  function createFaceSet(name) {
+    if (!E) return 0;
+    const faces = faceSelection();
+    if (!faces.length) { status('Select faces first'); return 0; }
+    const names = E.mesh.userData.faceSetNames;
+    const id = names.length;
+    names.push(name || `Set ${id}`);
+    for (const t of faces) E.faceSetIds[t] = id;
+    status(`Face set “${names[id]}” · ${faces.length} faces`);
+    return id;
+  }
+  function runStoredLoop(kind) {
+    if (!E) return [];
+    const edge = firstSelectedEdge();
+    if (edge < 0) { status('Select an edge or a face first'); return []; }
+    if (kind === 'face') {
+      const faces = faceLoop(E, edge);
+      if (S.selMode !== 'face') setSelMode('face');
+      E.selF.fill(0); for (const t of faces) E.selF[t] = 1;
+      refreshOverlay(false); updateGizmo();
+      status(`Face loop · ${faces.length} faces`);
+      return faces;
+    }
+    const ids = kind === 'ring' ? edgeRing(E, edge) : edgeLoop(E, edge);
+    if (S.selMode !== 'edge') setSelMode('edge');
+    E.selE.fill(0); for (const id of ids) E.selE[id] = 1;
+    refreshOverlay(false); updateGizmo();
+    status(`${kind === 'ring' ? 'Edge ring' : 'Edge loop'} · ${ids.length} edges`);
+    return ids;
+  }
+  function selectFaceSet(id) {
+    if (!E) return 0;
+    if (S.selMode !== 'face') setSelMode('face');
+    E.selF.fill(0);
+    let n = 0;
+    for (let t = 0; t < E.nt; t++) if (E.faceSetIds[t] === id) { E.selF[t] = 1; n++; }
+    refreshOverlay(false); updateGizmo();
+    status(`Face set · ${n} faces`);
+    return n;
+  }
   function handleKey(e) {
     const k = e.key.toLowerCase();
     if (S.modal) {
@@ -653,6 +740,7 @@ export function createEditor(ctx) {
       else if (k === 'g' || k === 'r' || k === 's') { const kind = k.toUpperCase(); if (kind !== S.modal.kind) { cancel(S.modal.t); S.modal.kind = kind; updateModal(); } }
       e.preventDefault(); return true;
     }
+    if (S.mode === 'edit' && k === 'l' && !e.altKey) { e.preventDefault(); selectLinked(e.ctrlKey || e.metaKey); return true; }
     if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return true; }
     if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return true; }
     if (e.ctrlKey || e.metaKey || e.altKey && k !== 'a') return false;
@@ -828,6 +916,8 @@ export function createEditor(ctx) {
     selectList, pushHistory: push, clearHistory, undoStack: () => undoStack, handleKey, setTool, setMode, setSelMode, selectAll, undo, redo,
     exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; },
     getTransform, applyNumeric, align, dropToGround, setSpace, getSpace: () => S.space,
+    selectLoopAt, selectLinked, createFaceSet, selectFaceSet, runStoredLoop, edgeLoopFrom: (edge) => E ? edgeLoop(E, edge) : [],
+    faceSetNames: () => E?.mesh.userData.faceSetNames?.slice() || [],
     setSnap, getSnap: () => ({ on: S.snap, move: S.snapMove, rotate: THREE.MathUtils.radToDeg(S.snapRot), scale: S.snapScale }),
     setPlaybackLocked,
   };

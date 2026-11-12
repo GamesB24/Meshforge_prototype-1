@@ -14,7 +14,7 @@ function loadPuppeteer() {
 }
 const puppeteer = loadPuppeteer();
 
-const url = process.argv[2];
+const url = (() => { const u = new URL(process.argv[2]); if (!u.searchParams.has('noautosave')) u.searchParams.set('noautosave', '1'); return u.href; })();
 const chrome = process.env.CHROME || '/usr/bin/google-chrome';
 const outDir = process.env.SHOTS || '/opt/cursor/artifacts';
 if (!url) { console.error('missing url'); process.exit(2); }

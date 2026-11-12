@@ -23,7 +23,15 @@ body{display:grid;grid-template-rows:28px 1fr 26px}
 .keys{position:absolute;bottom:6px;left:10px;color:#9a9a9a;font-size:11px;z-index:2}
 .drop{position:absolute;inset:40% 25% auto;padding:28px;border:1.5px dashed #6a6a6a;border-radius:8px;text-align:center;color:#bdbdbd;background:#2b2b2bcc;cursor:pointer;z-index:2}
 .drop.over{border-color:var(--orange)}.drop.hidden{display:none}.viewport.over{outline:2px solid var(--orange);outline-offset:-2px}
-.props{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:6px;display:flex;flex-direction:column;gap:6px}
+.props{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:6px;display:grid;grid-template-columns:34px minmax(0,1fr);align-content:start;gap:6px}
+#sideTabs{display:flex;flex-direction:column;gap:4px;position:sticky;top:0;grid-column:1;grid-row:1 / span 40}
+.props > *:not(#sideTabs){grid-column:2}
+#sideTabs button{width:28px;height:28px;background:var(--wid2);border:0;border-radius:4px;color:var(--text);cursor:pointer}
+#sideTabs button.on{background:var(--acc);color:#fff}
+body[data-side="object"] .props > details[data-side="edit"],body[data-side="object"] #editPanel{display:none}
+body[data-side="edit"] .props > details:not(#editPanel),body[data-side="edit"] .props > div:not(#sideTabs):not(#editPanel){display:none}
+body[data-side="sculpt"] .props > *:not(#sideTabs):not(#sculptPanel){display:none}
+body[data-side="land"] .props > *:not(#sideTabs):not(#landPanel){display:none}
 details{background:var(--area);border-radius:5px;padding:0 8px 6px}details:not([open]){padding-bottom:0}
 summary{padding:6px 0;font-weight:600;cursor:pointer;list-style:none}summary::before{content:"▸ ";color:var(--mute)}details[open] summary::before{content:"▾ "}
 .row{display:grid;grid-template-columns:86px 1fr auto;gap:6px;align-items:center;margin:4px 0}.row>span{color:var(--mute);text-align:right}.row.chk{display:flex;gap:6px}
@@ -61,7 +69,7 @@ button.btn{border:0;font:inherit;cursor:pointer}button.btn:disabled{opacity:.4;c
 /* v4: Landscape workspace */
 .tab{cursor:pointer}
 body.land .workspace{grid-template-columns:40px 1fr 330px}
-body.land .props>:not(#landPanel){display:none}
+body.land .props>:not(#landPanel):not(#sideTabs){display:none}
 body.land #selModes,body.land #mode,body.land .keys{display:none}
 #landPanel{display:flex;flex-direction:column;gap:6px}
 .palette{display:flex;gap:4px;align-items:center;margin:6px 0}.palette span{color:var(--mute);margin-left:6px}
@@ -80,7 +88,7 @@ body.land #selModes,body.land #mode,body.land .keys{display:none}
 .sculptron{align-self:stretch;background:#3a2f22;color:var(--orange);border:0;border-left:1px solid var(--line);padding:0 14px;font:600 12px inherit;cursor:pointer}
 .sculptron:hover{background:#4a3a28}.sculptron.on{background:var(--orange);color:#1d1d1d}
 #triCount.warn{background:#6a3a1a;color:#ffd0a0}
-body.sculpt .props>:not(#sculptPanel){display:none}
+body.sculpt .props>:not(#sculptPanel):not(#sideTabs){display:none}
 body.sculpt #selModes,body.sculpt .keys,body.sculpt #drop{display:none}
 body.sculpt #c{cursor:crosshair}
 #sculptPanel{display:flex;flex-direction:column;gap:6px}
@@ -106,7 +114,7 @@ body.sculpt #c{cursor:crosshair}
 .tab{cursor:pointer}.tab.dim{cursor:default}#tabShader.on,#tabUV.on{box-shadow:inset 0 2px 0 var(--chib)}
 #shading .chib{color:var(--chib)}#shading .chib.on{background:var(--chib);color:#fff}
 .ws-panel{display:none;flex-direction:column;gap:6px}
-body.ws-shader .props>:not(#shaderPanel),body.ws-uv .props>:not(#shaderPanel):not(#uvPanel){display:none}
+body.ws-shader .props>:not(#shaderPanel):not(#sideTabs),body.ws-uv .props>:not(#shaderPanel):not(#uvPanel):not(#sideTabs){display:none}
 body.ws-shader #shaderPanel,body.ws-uv #shaderPanel{display:flex}
 body.ws-uv #uvPanel{display:flex}
 .ws-panel .acc{border-left:3px solid var(--chib)}

@@ -228,7 +228,20 @@ export function createAgentBridge(ctx) {
       return { ok: true };
     },
 
-    // 8. Generate Level Layout (Instant In-Engine Arena / Game Level)
+    list_objects: async () => ({ ok: true, objects: window.MeshForge.getObjects?.() || [] }),
+    set_behaviour: async ({ target = 'selected', type = 'spin', params = {} }) => {
+      const id = target === 'selected' ? (window.MeshForge.getSelected?.() || 'selected') : target;
+      const ok = window.MeshForge.setBehaviours?.(id, [{ type, enabled: true, params }]);
+      status(ok ? `Attached ${type} to ${id}` : 'No object for that behaviour');
+      return { ok: !!ok, type };
+    },
+    build_level: async ({ seed, width = 48, depth = 48, trees = 14 } = {}) => {
+      const res = window.MeshForge.buildLevel?.({ seed, width, depth, trees, randomize: true });
+      status(res ? `Built a landscape level in the scene (${res.children?.length || 0} objects). Press Play to run it.` : 'Could not build a level');
+      return { ok: !!res, ...(res || {}) };
+    },
+
+    // 8. Generate Level Layout (block arena, only when the user asks for an arena)
     generate_level: async ({ theme = 'arena', size = 30, obstacles = 8 }) => {
       status(`Constructing procedural ${theme} game level...`);
       // Ground plane
@@ -337,9 +350,20 @@ export function createAgentBridge(ctx) {
     }
 
     // 2. Procedural level generation
-    if (lower.includes('generate level') || lower.includes('new arena') || lower.includes('create game') || lower.includes('make a level')) {
+    if (lower.includes('arena') || lower.includes('battle')) {
       await executeTool('generate_level', { theme: 'Sci-Fi Arena', obstacles: 10 });
-      addChatMessage('bot', 'Built that layout into the current scene. Press Play to run the scene.');
+      addChatMessage('bot', 'Built a block arena into the current scene. Press Play to run it.');
+      return;
+    }
+    if (lower.includes('landscape') || lower.includes('terrain') || lower.includes('make a game') || lower.includes('new game') || lower.includes('make a level') || lower.includes('create a level')) {
+      const trees = /tree/.test(lower) ? 24 : 14;
+      const res = await executeTool('build_level', { trees, width: 48, depth: 48 });
+      addChatMessage('bot', res.ok ? `Built a new landscape in this scene (${res.children?.length || 0} objects) with scatter and a playable ground. Press Play.` : 'I could not build that level.');
+      return;
+    }
+    if (lower.includes('spin')) {
+      await executeTool('set_behaviour', { type: 'spin', params: { axis: 'y', speed: 90 } });
+      addChatMessage('bot', 'The selected object now spins while Play is running.');
       return;
     }
 
