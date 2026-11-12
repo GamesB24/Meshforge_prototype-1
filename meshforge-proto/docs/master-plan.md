@@ -144,3 +144,11 @@ Shipped here:
 - Pose Mode: select a bone, rotate it, insert the pose as timeline keys (the timeline already stores Euler rotation per object; bone poses need a parallel track map). Play evaluates those tracks. Save/load writes the armature and the weight attributes next to the mesh geometry in the `.meshforge` file.
 
 Do that as one slice. A bone list without weights, or weights without pose playback, is not worth merging.
+
+## Round 3 scope note
+
+This run fixes sign-in, the Add-sphere wipe, and the agent tool API. It does not build Pose Mode, weight paint, or the content browser. Those stay as the next slice:
+
+**Rigging, Pose, Weight Paint.** Add an armature object (a group of `THREE.Bone` nodes) from the sidebar. Armature edit adds a root bone, extrudes a child, and reparents without creating a cycle. Parenting a mesh runs distance-based automatic weights into `skinIndex` / `skinWeight` and binds a `SkinnedMesh`. Weight Paint is a brush (add, subtract, smooth) on the active bone with a heatmap in vertex colours. Pose Mode rotates the selected bone and writes that rotation into the existing timeline; Play evaluates it and Stop restores bone transforms along with meshes. `.meshforge` saves bone nodes and the skin attributes. The right-hand strip gains Armature, Pose, and Weight icons. `frontend/rig.js` already plays imported glTF skins and should stay; this new path is for armatures made inside MeshForge.
+
+**Content browser.** Dock a second bottom panel on the timeline bar with tabs Timeline and Content. Remember the open tab and the collapsed state in `localStorage`. List scene meshes, imported models, materials, and landscape spawn types as small generated thumbnails. Double-click or drag onto the viewport adds a copy. A spawn type in that list can be passed to the landscape spawner the same way Add selected mesh works today. Keep it collapsible to a thin bar.

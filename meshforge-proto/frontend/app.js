@@ -210,14 +210,13 @@ sculpt = createSculpt({
 const SPHERE_DETAIL = { 2: 31, 3: 63, 4: 126 };
 function newSphere(level = 2, detail) {
   if (land?.active) setWorkspace('gen');
-  editor.reset(); if (model) scene.remove(model);
   const geo = new THREE.IcosahedronGeometry(0.7, detail ?? SPHERE_DETAIL[level] ?? 31); geo.translate(0, 0.7, 0);
   const mat = new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.6, side: THREE.DoubleSide }); offsetMat(mat);
   const mesh = new THREE.Mesh(geo, mat); mesh.name = 'Sphere';
-  model = new THREE.Group(); model.add(mesh); model.userData.norm = new THREE.Matrix4(); scene.add(model); state.current = null;
-  applyShading(); frameModel(); updateInfo(); $('drop').classList.add('hidden');
-  document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
-  editor.select(mesh); return editor.setMode('sculpt');
+  addSceneMesh(mesh, { label: mesh.name, source: 'primitive' });
+  editor.select(mesh);
+  $('progMsg').textContent = 'Added a sphere. The rest of the scene is unchanged.';
+  return editor.setMode('sculpt');
 }
 $('sculptron').onclick = async () => {
   if (!sculpt.active) { if (!model || land?.active) await newSphere(2); else await editor.setMode('sculpt'); if (!sculpt.active) return; sculpt.setDyn(true); return; }
@@ -948,10 +947,11 @@ function syncSideTabs() {
 function setSide(side) {
   document.body.dataset.side = side;
   syncSideTabs();
-  if (side === 'land') { if (curWS !== 'land') setWorkspace('land'); }
-  else if (side === 'sculpt') { if (editor.mode !== 'sculpt') editor.setMode('sculpt'); }
-  else if (side === 'edit') { if (curWS === 'land') setWorkspace('gen'); if (editor.mode !== 'edit') editor.setMode('edit'); }
-  else { if (curWS === 'land') setWorkspace('gen'); if (editor.mode !== 'object') editor.setMode('object'); }
+  if (side === 'land') { if (curWS !== 'land') setWorkspace('land'); return; }
+  if (curWS === 'land') setWorkspace('gen');
+  if (side === 'sculpt') { if (editor.mode !== 'sculpt') editor.setMode('sculpt'); return; }
+  if (side === 'edit') { if (editor.mode !== 'edit') editor.setMode('edit'); return; }
+  if (editor.mode !== 'object') editor.setMode('object');
 }
 function installSideTabs() {
   const props = document.querySelector('.props');

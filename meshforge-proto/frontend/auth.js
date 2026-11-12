@@ -47,97 +47,119 @@ export function createAuth(ctx) {
     window.dispatchEvent(new CustomEvent('mf-wallet-changed', { detail: { credits: S.user.wallet_credits } }));
   }
 
-  // Google Sign-In
-  async function loginGoogle(credentialOrProfile) {
-    status('Signing in with Google...');
-    try {
-      const payload = typeof credentialOrProfile === 'string'
-        ? { credential: credentialOrProfile }
-        : { profile: credentialOrProfile };
+  const PROVIDERS = ['openai', 'anthropic', 'gemini', 'xai', 'custom'];
 
-      const res = await fetch('/api/auth/google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) throw new Error('Google authentication failed');
-      const data = await res.json();
-      if (data.ok) {
-        S.token = data.token;
-        S.user = data.user;
-        localStorage.setItem('mf_auth_token', S.token);
-        dispatchUpdate();
-        status(`Welcome, ${S.user.name}! Connected to Google Agent Wallet.`);
-        return S.user;
-      }
-    } catch (err) {
-      status('Sign-in error: ' + err.message);
-      // Fallback local simulation if server offline
-      S.user = {
-        user_id: 'google_local_dev',
-        email: 'creator@gmail.com',
-        name: 'Google Creator',
-        picture: 'https://www.gstatic.com/images/branding/product/1x/avatar_circle_blue_512dp.png',
-        provider: 'google',
-        wallet_credits: 1000,
-      };
-      dispatchUpdate();
-      return S.user;
-    }
+  function readKeys() {
+    try { return JSON.parse(localStorage.getItem('mf_provider_keys') || '{}'); } catch { return {}; }
+  }
+  function writeKeys(map) {
+    localStorage.setItem('mf_provider_keys', JSON.stringify(map));
+    S.openaiKey = map.openai?.apiKey || '';
+    S.geminiKey = map.gemini?.apiKey || '';
+    if (S.openaiKey) localStorage.setItem('mf_openai_key', S.openaiKey); else localStorage.removeItem('mf_openai_key');
+    if (S.geminiKey) localStorage.setItem('mf_gemini_key', S.geminiKey); else localStorage.removeItem('mf_gemini_key');
   }
 
-  // OpenAI Connect
-  async function loginOpenAI(apiKey, nickname = 'OpenAI Pilot') {
-    status('Verifying OpenAI API credentials...');
-    const key = apiKey?.trim();
-    if (!key) throw new Error('API key required');
-
-    try {
-      const res = await fetch('/api/auth/openai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: key, nickname }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Failed to authenticate OpenAI key');
-      }
-
-      const data = await res.json();
-      S.token = data.token;
-      S.user = data.user;
-      S.openaiKey = key;
-      localStorage.setItem('mf_auth_token', S.token);
-      localStorage.setItem('mf_openai_key', key);
-      dispatchUpdate();
-      status(`Connected as ${S.user.name}. OpenAI models unlocked!`);
-      return S.user;
-    } catch (err) {
-      // Local storage fallback
-      S.openaiKey = key;
-      localStorage.setItem('mf_openai_key', key);
-      S.user = {
-        user_id: 'openai_local',
-        email: `sk-...${key.slice(-4)}@openai.agent`,
-        name: nickname,
-        picture: '',
-        provider: 'openai',
-        wallet_credits: 1000,
-      };
-      dispatchUpdate();
-      status('OpenAI key saved locally.');
-      return S.user;
+  async function testProviderKey(provider, apiKey, baseUrl = '') {
+    const res = await fetch('/api/auth/keys/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, api_key: apiKey, base_url: baseUrl }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch { data = {}; }
+    if (!res.ok) {
+      const down = res.status === 404 || res.status === 501;
+      const fallback = down
+        ? 'The MeshForge API is not running on this address, so the key was not saved. Start the Python server and try again.'
+        : `Server returned HTTP ${res.status}`;
+      return { ok: false, provider, message: data.detail || data.message || fallback };
     }
+    return data;
   }
 
-  // Gemini API Key config
+  async function saveProviderKey(provider, apiKey, baseUrl = '') {
+    const key = (apiKey || '').trim();
+    if (!PROVIDERS.includes(provider)) throw new Error('Unknown provider');
+    if (!key) throw new Error('Enter an API key first.');
+    let result;
+    try { result = await testProviderKey(provider, key, baseUrl); }
+    catch (err) { throw new Error('The MeshForge server is not running, so the key could not be checked. Start it, then try again. ' + err.message); }
+    if (!result.ok) throw new Error(result.message || 'The provider rejected this key.');
+    const map = readKeys();
+    map[provider] = { apiKey: key, baseUrl: baseUrl || '', checkedAt: Date.now() };
+    writeKeys(map);
+    status(result.message);
+    return result;
+  }
+
+  function googleClientId() { return localStorage.getItem('mf_google_client_id') || ''; }
+  function setGoogleClientId(id) {
+    const v = (id || '').trim();
+    if (v) localStorage.setItem('mf_google_client_id', v);
+    else localStorage.removeItem('mf_google_client_id');
+  }
+
+  function loadGoogleScript() {
+    if (window.google?.accounts?.id) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const existing = document.getElementById('mf-gsi');
+      if (existing) { existing.addEventListener('load', () => resolve()); existing.addEventListener('error', () => reject(new Error('Could not load Google sign-in.'))); return; }
+      const s = document.createElement('script');
+      s.id = 'mf-gsi';
+      s.src = 'https://accounts.google.com/gsi/client';
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('Could not load Google sign-in. Check the network.'));
+      document.head.appendChild(s);
+    });
+  }
+
+  // Google Identity Services. This identifies the user. It does not mint a Gemini API key.
+  async function loginGoogle(credential) {
+    const clientId = googleClientId();
+    if (!credential) {
+      if (!clientId) throw new Error('Paste a Google OAuth client ID first. Create a Web client in Google Cloud Console, add this page as an authorised origin, then sign in. Google sign-in does not create a Gemini API key; save a Gemini key separately.');
+      await loadGoogleScript();
+      return new Promise((resolve, reject) => {
+        window.google.accounts.id.initialize({
+          client_id: clientId,
+          callback: async (resp) => {
+            try { resolve(await loginGoogle(resp.credential)); }
+            catch (err) { reject(err); }
+          },
+        });
+        window.google.accounts.id.prompt((n) => {
+          if (n.isNotDisplayed?.() || n.isSkippedMoment?.()) reject(new Error('Google did not show the sign-in prompt. Check the OAuth client ID and that this site is an authorised JavaScript origin.'));
+        });
+      });
+    }
+    status('Checking the Google sign-in with the MeshForge server...');
+    const res = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential, client_id: clientId }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch { data = {}; }
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.message || `Google sign-in failed (HTTP ${res.status}). The server must be running.`);
+    S.token = data.token;
+    S.user = data.user;
+    localStorage.setItem('mf_auth_token', S.token);
+    dispatchUpdate();
+    status(`Signed in as ${S.user.name}. A Gemini API key is still separate from this login.`);
+    return S.user;
+  }
+
+  async function loginOpenAI(apiKey, nickname = 'OpenAI') {
+    const result = await saveProviderKey('openai', apiKey);
+    S.user = { ...S.user, name: nickname || S.user.name, provider: 'openai' };
+    dispatchUpdate();
+    return result;
+  }
+
   function setGeminiKey(key) {
-    S.geminiKey = key?.trim() || '';
-    if (S.geminiKey) localStorage.setItem('mf_gemini_key', S.geminiKey);
-    else localStorage.removeItem('mf_gemini_key');
-    status('Gemini API key updated.');
+    return saveProviderKey('gemini', key);
   }
 
   // Wallet operations (kiosk purchases, agent transfers)
@@ -194,9 +216,14 @@ export function createAuth(ctx) {
   return {
     getUser: () => ({ ...S.user }),
     getToken: () => S.token,
-    getOpenAIKey: () => S.openaiKey,
-    getGeminiKey: () => S.geminiKey,
+    getOpenAIKey: () => readKeys().openai?.apiKey || S.openaiKey,
+    getGeminiKey: () => readKeys().gemini?.apiKey || S.geminiKey,
+    getProviderKey: (provider) => readKeys()[provider] || null,
     setGeminiKey,
+    saveProviderKey,
+    testProviderKey,
+    googleClientId,
+    setGoogleClientId,
     loginGoogle,
     loginOpenAI,
     logout,

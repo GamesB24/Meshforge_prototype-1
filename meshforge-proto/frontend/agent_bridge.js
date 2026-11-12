@@ -108,6 +108,34 @@ export function createAgentBridge(ctx) {
   connectWebSocket();
 
   // ---------- Tool Execution Engine (DCC Actions) ----------
+  const TOOL_DOCS = [
+    { name: 'list_tools', description: 'List every tool the open scene accepts, with parameter names.', params: {} },
+    { name: 'get_scene_summary', description: 'Names, ids, transforms and behaviours of the current scene.', params: {} },
+    { name: 'spawn_primitive', description: 'Add a mesh to the open scene. Does not delete existing objects.', params: { type: 'cube|sphere|cylinder|plane|torus|ramp', color: '#hex', position: [0, 1, 0], scale: [1, 1, 1], name: 'string' } },
+    { name: 'delete_object', description: 'Delete one object by name or the selection. Undoable.', params: { target: 'selected|name' } },
+    { name: 'transform_object', description: 'Set position, rotation in degrees, or scale. Undoable.', params: { target: 'selected|name', position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] } },
+    { name: 'set_behaviour', description: 'Replace behaviours on one object. Types: spin, oscillate, character, follow, script.', params: { target: 'selected|name', type: 'spin', params: {} } },
+    { name: 'attach_script', description: 'Append a Play-mode script. The script receives api with dt, time, position, rotation, scale, get(name), key(code).', params: { target: 'selected|name', source: 'api.position.y += api.dt;', name: 'Script' } },
+    { name: 'build_level', description: 'Generate a landscape and place it in the open scene as real objects.', params: { seed: 1, width: 48, depth: 48, trees: 14 } },
+    { name: 'generate_level', description: 'Add a block arena (floor, walls, cover) to the open scene. Does not start Play.', params: { size: 30, obstacles: 8 } },
+    { name: 'set_material', description: 'Set colour, roughness or metalness on one mesh.', params: { target: 'selected|name', color: '#hex' } },
+    { name: 'set_shading', description: 'Viewport shading: solid, wire, matcap, color, chibili.', params: { mode: 'solid' } },
+    { name: 'set_environment', description: 'Add a sky dome and, when asked, a water plane. Existing objects stay.', params: { sky: true, water: true } },
+    { name: 'list_objects', description: 'Shorter object list: id, label, source, visibility, selection.', params: {} },
+    { name: 'companion_speak', description: 'Show a companion line. Does not change the scene.', params: { text: 'string' } },
+    { name: 'transfer_credits', description: 'Move wallet credits. Needs the MeshForge server.', params: { amount: 100, target: 'string' } },
+  ];
+
+  function findObject(target) {
+    if (!target || target === 'selected') {
+      const id = window.MeshForge.getSelected?.();
+      return window.MeshForge.getObjects?.().find((o) => o.id === id) ? editor.sel : editor.sel;
+    }
+    let found = null;
+    scene.traverse((o) => { if (!found && o.name === target) found = o; });
+    return found;
+  }
+
   const TOOLS = {
     // 1. Spawning Primitives & Objects
     spawn_primitive: async ({ type = 'cube', color = '#5588cc', position = [0, 1, 0], scale = [1, 1, 1], name = '' }) => {
@@ -153,6 +181,12 @@ export function createAgentBridge(ctx) {
         root.add(mesh);
         editor.select(mesh);
       }
+      const parent = mesh.parent;
+      editor.pushHistory?.({
+        label: 'Spawn ' + mesh.name,
+        undo: () => { if (editor.sel === mesh) editor.select(null); parent?.remove(mesh); },
+        redo: () => { parent?.add(mesh); },
+      });
       status(`Spawned ${mesh.name}`);
       return { ok: true, object_id: mesh.uuid, name: mesh.name };
     },
@@ -168,8 +202,10 @@ export function createAgentBridge(ctx) {
         return { ok: false, error: 'No target object' };
       }
       const name = obj.name;
+      const parent = obj.parent;
       editor.select(null);
-      obj.parent?.remove(obj);
+      parent?.remove(obj);
+      editor.pushHistory?.({ label: 'Delete ' + name, undo: () => parent?.add(obj), redo: () => { if (editor.sel === obj) editor.select(null); parent?.remove(obj); } });
       status(`Deleted ${name}`);
       return { ok: true, deleted: name };
     },
@@ -181,10 +217,14 @@ export function createAgentBridge(ctx) {
         scene.traverse((o) => { if (o.name.toLowerCase() === target.toLowerCase()) obj = o; });
       }
       if (!obj) return { ok: false, error: 'No object selected' };
+      const before = obj.matrix.clone();
       if (position) obj.position.set(position[0], position[1], position[2]);
       if (rotation) obj.rotation.set(rotation[0] * Math.PI / 180, rotation[1] * Math.PI / 180, rotation[2] * Math.PI / 180);
       if (scale) obj.scale.set(scale[0], scale[1], scale[2]);
       obj.updateMatrixWorld();
+      const after = obj.matrix.clone();
+      const apply = (m) => { m.decompose(obj.position, obj.quaternion, obj.scale); obj.updateMatrixWorld(true); };
+      editor.pushHistory?.({ label: 'Transform ' + obj.name, undo: () => apply(before), redo: () => apply(after) });
       status(`Transformed ${obj.name}`);
       return { ok: true };
     },
@@ -228,12 +268,44 @@ export function createAgentBridge(ctx) {
       return { ok: true };
     },
 
+    list_tools: async () => ({ ok: true, tools: TOOL_DOCS }),
+    get_scene_summary: async () => {
+      const objects = (window.MeshForge.getObjects?.() || []).map((o) => ({ ...o, behaviours: window.MeshForge.getBehaviours?.(o.id) || [] }));
+      return { ok: true, mode: window.MeshForge.mode, workspace: window.MeshForge.workspace, count: objects.length, objects };
+    },
+    attach_script: async ({ target = 'selected', source = '', name = 'Script' } = {}) => {
+      if (!String(source).trim()) return { ok: false, error: 'Script source is empty.' };
+      const obj = findObject(target);
+      if (!obj) return { ok: false, error: 'No object matches that target.' };
+      const id = obj.userData.sceneId || obj.uuid;
+      const prev = window.MeshForge.getBehaviours?.(id) || [];
+      const next = prev.concat([{ type: 'script', enabled: true, params: { source, name } }]);
+      window.MeshForge.setBehaviours?.(id, next);
+      editor.pushHistory?.({
+        label: 'Attach script',
+        undo: () => window.MeshForge.setBehaviours(id, prev),
+        redo: () => window.MeshForge.setBehaviours(id, next),
+      });
+      status(`Attached a script to ${obj.name}. It runs during Play.`);
+      return { ok: true, name: obj.name, id };
+    },
     list_objects: async () => ({ ok: true, objects: window.MeshForge.getObjects?.() || [] }),
     set_behaviour: async ({ target = 'selected', type = 'spin', params = {} }) => {
-      const id = target === 'selected' ? (window.MeshForge.getSelected?.() || 'selected') : target;
-      const ok = window.MeshForge.setBehaviours?.(id, [{ type, enabled: true, params }]);
-      status(ok ? `Attached ${type} to ${id}` : 'No object for that behaviour');
-      return { ok: !!ok, type };
+      const obj = findObject(target);
+      if (!obj) return { ok: false, error: 'No object for that behaviour' };
+      const id = obj.userData.sceneId || obj.uuid;
+      const prev = window.MeshForge.getBehaviours?.(id) || [];
+      const next = [{ type, enabled: true, params }];
+      const ok = window.MeshForge.setBehaviours?.(id, next);
+      if (ok) {
+        editor.pushHistory?.({
+          label: 'Behaviour ' + type,
+          undo: () => window.MeshForge.setBehaviours(id, prev),
+          redo: () => window.MeshForge.setBehaviours(id, next),
+        });
+      }
+      status(ok ? `Attached ${type} to ${obj.name}` : 'No object for that behaviour');
+      return { ok: !!ok, type, name: obj.name };
     },
     build_level: async ({ seed, width = 48, depth = 48, trees = 14 } = {}) => {
       const res = window.MeshForge.buildLevel?.({ seed, width, depth, trees, randomize: true });
@@ -434,20 +506,16 @@ export function createAgentBridge(ctx) {
         <button id="aiCloseBtn" class="ai-btn-icon" title="Close">✕</button>
       </div>
       <div id="aiSettings" class="ai-settings hidden">
-        <div class="ai-set-row">
-          <label>Google Cloud Login:</label>
-          <button id="btnGoogleAuth" class="btn-gsi">Sign in with Google</button>
+        <p class="hint0">Keys stay in this browser only. They are not written into project files.</p>
+        <div class="ai-set-row"><label>Provider</label>
+          <select id="inpProvider" class="ai-inp"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option><option value="xai">xAI</option><option value="custom">Custom OpenAI-compatible</option></select>
         </div>
-        <div class="ai-set-row">
-          <label>OpenAI API Key:</label>
-          <input id="inpOpenAI" type="password" placeholder="sk-..." class="ai-inp">
-          <button id="btnSaveOpenAI" class="btn sm">Save</button>
-        </div>
-        <div class="ai-set-row">
-          <label>Google Gemini Key:</label>
-          <input id="inpGemini" type="password" placeholder="AIzaSy..." class="ai-inp">
-          <button id="btnSaveGemini" class="btn sm">Save</button>
-        </div>
+        <div class="ai-set-row" id="rowBase" hidden><label>Base URL</label><input id="inpBase" class="ai-inp" placeholder="https://host/v1"></div>
+        <div class="ai-set-row"><label>API key</label><input id="inpKey" type="password" class="ai-inp" placeholder="Paste a key" autocomplete="off"></div>
+        <div class="ai-set-row"><button id="btnSaveKey" class="btn sm" type="button">Check and save</button><span id="keyStatus"></span></div>
+        <div class="ai-set-row"><label>Google OAuth client ID</label><input id="inpGoogleClient" class="ai-inp" placeholder="….apps.googleusercontent.com" autocomplete="off"></div>
+        <div class="ai-set-row"><button id="btnGoogleAuth" class="btn-gsi" type="button">Sign in with Google</button></div>
+        <p class="hint0">Google sign-in identifies you. It does not create a Gemini API key. Only Gemini uses that login’s Google account; OpenAI, Anthropic and xAI need their own keys. Create a Web OAuth client in Google Cloud, and add this site under Authorised JavaScript origins.</p>
       </div>
       <div id="aiLog" class="ai-log">
         <div class="ai-msg bot">Hello! I am your MeshForge AI agent. You can type commands or press <b>V</b> to speak instructions.</div>
@@ -473,24 +541,35 @@ export function createAgentBridge(ctx) {
       panel.querySelector('#aiSettings').classList.toggle('hidden');
     };
 
-    // Google Sign-In button
+    const providerEl = panel.querySelector('#inpProvider');
+    const baseRow = panel.querySelector('#rowBase');
+    const baseEl = panel.querySelector('#inpBase');
+    const keyEl = panel.querySelector('#inpKey');
+    const keyStatus = panel.querySelector('#keyStatus');
+    const showProvider = () => {
+      const id = providerEl.value;
+      baseRow.hidden = id !== 'custom';
+      const saved = auth?.getProviderKey?.(id);
+      keyEl.value = saved?.apiKey || '';
+      if (id === 'custom') baseEl.value = saved?.baseUrl || '';
+    };
+    providerEl.onchange = showProvider;
+    showProvider();
+    panel.querySelector('#inpGoogleClient').value = auth?.googleClientId?.() || '';
+    panel.querySelector('#inpGoogleClient').onchange = (e) => auth?.setGoogleClientId(e.target.value);
+    panel.querySelector('#btnSaveKey').onclick = async () => {
+      keyStatus.textContent = 'Checking…';
+      try {
+        const result = await auth.saveProviderKey(providerEl.value, keyEl.value, baseEl.value);
+        keyStatus.textContent = result.message;
+      } catch (err) {
+        keyStatus.textContent = err.message;
+        status(err.message);
+      }
+    };
     panel.querySelector('#btnGoogleAuth').onclick = async () => {
-      await auth?.loginGoogle({ name: 'Google Creator', email: 'creator@gmail.com' });
-    };
-
-    // OpenAI Key Save
-    const inpOpenAI = panel.querySelector('#inpOpenAI');
-    if (auth?.getOpenAIKey()) inpOpenAI.value = auth.getOpenAIKey();
-    panel.querySelector('#btnSaveOpenAI').onclick = async () => {
-      const k = inpOpenAI.value.trim();
-      if (k) await auth?.loginOpenAI(k);
-    };
-
-    // Gemini Key Save
-    const inpGemini = panel.querySelector('#inpGemini');
-    if (auth?.getGeminiKey()) inpGemini.value = auth.getGeminiKey();
-    panel.querySelector('#btnSaveGemini').onclick = () => {
-      auth?.setGeminiKey(inpGemini.value.trim());
+      try { await auth?.loginGoogle(); }
+      catch (err) { status(err.message); keyStatus.textContent = err.message; }
     };
 
     panel.querySelector('#aiForm').onsubmit = (e) => {
@@ -539,6 +618,7 @@ export function createAgentBridge(ctx) {
     executeNaturalLanguage,
     executeTool,
     tools: TOOLS,
+    listTools: () => TOOL_DOCS,
     isListening: () => S.listening,
   };
 }
