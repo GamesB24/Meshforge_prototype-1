@@ -3,6 +3,7 @@
 // Original MIT code. The old built-in shooter / kiosk / drone launch has been removed from this path.
 import * as THREE from 'three';
 import { listBehaviours } from './behaviours.js';
+import { driveHumanoid } from './character_anim.js';
 
 const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -17,6 +18,7 @@ export function createGameMode(ctx) {
     snapshot: null,
     time: 0,
     keys: {},
+    stick: { x: 0, z: 0 },
     following: false,
     mixer: null,
     scriptErrors: new Set(),
@@ -30,7 +32,8 @@ export function createGameMode(ctx) {
     const root = contentRoot();
     if (!root) return;
     root.traverse((o) => {
-      if (o.isMesh && !o.userData.isOverlay && !o.userData.isSelection) fn(o);
+      if (o.userData?.isOverlay || o.userData?.isSelection || o.userData?.isBoneViz) return;
+      if (o.isMesh || o.isBone || o.isLight || o.isCamera || o.userData?.isEmpty) fn(o);
     });
   }
 
@@ -174,10 +177,14 @@ export function createGameMode(ctx) {
     _fwd.normalize();
     _right.crossVectors(_fwd, _up).normalize();
     _move.set(0, 0, 0);
-    if (S.keys.KeyW) _move.add(_fwd);
-    if (S.keys.KeyS) _move.sub(_fwd);
-    if (S.keys.KeyD) _move.add(_right);
-    if (S.keys.KeyA) _move.sub(_right);
+    if (S.keys.KeyW || S.keys.ArrowUp) _move.add(_fwd);
+    if (S.keys.KeyS || S.keys.ArrowDown) _move.sub(_fwd);
+    if (S.keys.KeyD || S.keys.ArrowRight) _move.add(_right);
+    if (S.keys.KeyA || S.keys.ArrowLeft) _move.sub(_right);
+    if (S.stick.x || S.stick.z) {
+      _move.addScaledVector(_right, S.stick.x);
+      _move.addScaledVector(_fwd, S.stick.z);
+    }
     if (_move.lengthSq() > 0) {
       _move.normalize().multiplyScalar(speed * dt);
       const parent = obj.parent;
@@ -195,6 +202,9 @@ export function createGameMode(ctx) {
     beh._vy -= 18 * dt;
     obj.position.y += beh._vy * dt;
     if (obj.position.y <= beh._ground) { obj.position.y = beh._ground; beh._vy = 0; }
+    const moving = _move.lengthSq() > 1e-8;
+    const running = !!(S.keys.ShiftLeft || S.keys.ShiftRight);
+    driveHumanoid(obj, { time: S.time, moving, running, jumping: (beh._vy || 0) > 0.2, speed });
     if (p.camera === 'follow') {
       S.following = true;
       const facing = beh._facing && beh._facing.lengthSq() > 0 ? beh._facing : _fwd;
@@ -282,6 +292,7 @@ export function createGameMode(ctx) {
     if (editor?.mode && editor.mode !== 'object') { status('Switch to Object Mode before Play.'); return false; }
     if (S.state === 'pause') return resume();
     if (S.state === 'play') return true;
+    window.MeshForge?.armature?.leave?.();
     if (!contentRoot()) { status('Nothing in the scene yet. Add or generate objects, then press Play.'); return false; }
     if (fromStart) anim?.setFrame?.(anim.getStartFrame?.() ?? 0, { apply: false });
     beginSession();
@@ -358,7 +369,7 @@ export function createGameMode(ctx) {
     if (e.code === 'KeyP' && e.altKey && !e.repeat) { e.preventDefault(); togglePlay(); return true; }
     if (!isActive()) return false;
     if (e.code === 'Escape') { e.preventDefault(); stopPlay(); return true; }
-    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code)) {
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code)) {
       S.keys[e.code] = true;
       e.preventDefault();
       return true;
@@ -368,6 +379,29 @@ export function createGameMode(ctx) {
   }
 
   window.addEventListener('keyup', (e) => { S.keys[e.code] = false; });
+  const pad = document.createElement('div');
+  pad.id = 'movePad';
+  pad.innerHTML = `<div id="moveStick" title="Move"><i></i></div><div class="move-keys"><button type="button" data-k="KeyW">W</button><button type="button" data-k="KeyA">A</button><button type="button" data-k="KeyS">S</button><button type="button" data-k="KeyD">D</button><button type="button" data-k="ShiftLeft">Run</button><button type="button" data-k="Space">Jump</button></div>`;
+  document.body.appendChild(pad);
+  const stick = pad.querySelector('#moveStick');
+  const knob = stick.querySelector('i');
+  function setStick(x, z) {
+    S.stick.x = Math.max(-1, Math.min(1, x || 0));
+    S.stick.z = Math.max(-1, Math.min(1, z || 0));
+    knob.style.transform = `translate(${S.stick.x * 28}px, ${-S.stick.z * 28}px)`;
+  }
+  stick.addEventListener('pointerdown', (e) => { stick.setPointerCapture(e.pointerId); });
+  stick.addEventListener('pointermove', (e) => {
+    if (!stick.hasPointerCapture?.(e.pointerId)) return;
+    const r = stick.getBoundingClientRect();
+    setStick((e.clientX - (r.left + r.width / 2)) / 36, ((r.top + r.height / 2) - e.clientY) / 36);
+  });
+  stick.addEventListener('pointerup', () => setStick(0, 0));
+  pad.querySelectorAll('[data-k]').forEach((b) => {
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); S.keys[b.dataset.k] = true; });
+    b.addEventListener('pointerup', () => { S.keys[b.dataset.k] = false; });
+    b.addEventListener('pointerleave', () => { S.keys[b.dataset.k] = false; });
+  });
   canvas.addEventListener('mousedown', (e) => { if (isActive()) e.stopPropagation(); }, true);
 
   function tick(delta = 0.016) {
@@ -401,6 +435,7 @@ export function createGameMode(ctx) {
     isSimulating,
     allowsOrbit,
     getState: () => S.state,
+    setMoveInput(v = {}) { S.stick.x = v.x || 0; S.stick.z = v.z || 0; },
     getPlayerPosition() {
       const player = findByName('Player');
       return player ? player.position.clone() : camera().position.clone();

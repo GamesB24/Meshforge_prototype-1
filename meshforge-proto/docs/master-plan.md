@@ -145,6 +145,10 @@ Shipped here:
 
 Do that as one slice. A bone list without weights, or weights without pose playback, is not worth merging.
 
+## Round 4
+
+Shift+A adds primitives at the origin without clearing the scene. The icosphere and the sculpt base use a moderate subdivision; Sculpt → Subdivide adds detail on demand. Armature edit, a one-click humanoid fit, automatic weights, weight paint and pose mode are on the side strip. Pose keys use the timeline. Play restores bones with the rest of the scene, and `.meshforge` stores bones and skin weights. A Character behaviour drives idle, walk, run and jump on that humanoid set, with WASD, arrows and an on-screen stick. The content browser sits on the timeline dock, remembers its tab, and stores folders in IndexedDB and in the project file. Google sign-in failures name the failed step (client ID, origin, script, backend, token).
+
 ## Round 3 scope note
 
 This run fixes sign-in, the Add-sphere wipe, and the agent tool API. It does not build Pose Mode, weight paint, or the content browser. Those stay as the next slice:

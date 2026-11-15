@@ -115,12 +115,81 @@ export function createAuth(ctx) {
     });
   }
 
+  const GIS_REASONS = {
+    1: 'browser_not_supported',
+    2: 'invalid_client',
+    3: 'missing_client_id',
+    4: 'opt_out_or_no_session',
+    5: 'secure_http_required',
+    6: 'suppressed_by_user',
+    7: 'unregistered_origin',
+    8: 'unknown_reason',
+    browser_not_supported: 'browser_not_supported',
+    invalid_client: 'invalid_client',
+    missing_client_id: 'missing_client_id',
+    opt_out_or_no_session: 'opt_out_or_no_session',
+    secure_http_required: 'secure_http_required',
+    suppressed_by_user: 'suppressed_by_user',
+    unregistered_origin: 'unregistered_origin',
+    unknown_reason: 'unknown_reason',
+  };
+
+  function describeGoogleFailure(code, extra) {
+    const origin = location.origin;
+    const key = GIS_REASONS[code] || code || 'unknown_reason';
+    const detail = {
+      no_client_id: 'No OAuth client ID is saved in this browser.',
+      bad_client_id: 'The client ID does not look like a Web client (it should end in .apps.googleusercontent.com). Desktop, Android and iOS clients will not work on this page.',
+      script_blocked: 'The Google sign-in script did not load. Check the network, then try again.',
+      browser_not_supported: 'This browser cannot show the Google prompt.',
+      invalid_client: 'Google rejected the client ID. Create an OAuth client ID of type Web application, not Desktop or Android.',
+      missing_client_id: 'Google received no client ID.',
+      opt_out_or_no_session: 'Google skipped the prompt because there is no signed-in session, or the prompt was dismissed. Try again.',
+      secure_http_required: 'Google only allows http://localhost or https. Open the page on localhost, or use https.',
+      suppressed_by_user: 'The prompt is in a cooldown. Wait a moment, or clear the site’s Google cookies, then try again.',
+      unregistered_origin: `Origin mismatch. In Google Cloud, Authorised JavaScript origins must include exactly ${origin}. Add http://localhost and http://127.0.0.1 as separate entries when the port differs.`,
+      unknown_reason: 'Google did not show the sign-in prompt.',
+      backend_down: 'The MeshForge Python server is not running, so the ID token cannot be checked. Start it, then sign in again.',
+      token_rejected: 'Google or the MeshForge server rejected the ID token.',
+    }[key] || extra || 'Google sign-in failed.';
+    return [
+      detail,
+      extra && extra !== detail ? extra : '',
+      `This page’s origin is ${origin}.`,
+      'Setup: Google Cloud Console → APIs & Services → Credentials → Create credentials → OAuth client ID → Web application.',
+      `Authorised JavaScript origins: add ${origin} exactly (scheme, host and port). If you open both localhost and 127.0.0.1, add each one.`,
+      'OAuth consent screen: if Publishing status is Testing, add the Google account you sign in with under Test users.',
+      'The MeshForge backend must be running so POST /api/auth/google can verify the token.',
+      'This sign-in identifies you. It does not create a Gemini API key. Save a Gemini key separately.',
+    ].filter(Boolean).join(' ');
+  }
+
+  async function checkGoogleSetup() {
+    const id = googleClientId();
+    const notes = [];
+    if (!id) notes.push(describeGoogleFailure('no_client_id'));
+    else if (!id.endsWith('.apps.googleusercontent.com')) notes.push(describeGoogleFailure('bad_client_id'));
+    else notes.push(`Client ID is saved. This page’s origin is ${location.origin}. That exact origin must be an Authorised JavaScript origin on a Web application OAuth client.`);
+    try {
+      const res = await fetch('/api/auth/session');
+      if (!res.ok) notes.push(describeGoogleFailure('backend_down'));
+      else notes.push('The MeshForge server answered /api/auth/session.');
+    } catch {
+      notes.push(describeGoogleFailure('backend_down'));
+    }
+    const message = notes.join(' ');
+    status(message);
+    return { ok: !!id && id.endsWith('.apps.googleusercontent.com'), message };
+  }
+
   // Google Identity Services. This identifies the user. It does not mint a Gemini API key.
   async function loginGoogle(credential) {
     const clientId = googleClientId();
     if (!credential) {
-      if (!clientId) throw new Error('Paste a Google OAuth client ID first. Create a Web client in Google Cloud Console, add this page as an authorised origin, then sign in. Google sign-in does not create a Gemini API key; save a Gemini key separately.');
-      await loadGoogleScript();
+      if (!clientId) throw new Error(describeGoogleFailure('no_client_id'));
+      if (!clientId.endsWith('.apps.googleusercontent.com')) throw new Error(describeGoogleFailure('bad_client_id'));
+      try { await loadGoogleScript(); }
+      catch (err) { throw new Error(describeGoogleFailure('script_blocked', err.message)); }
       return new Promise((resolve, reject) => {
         window.google.accounts.id.initialize({
           client_id: clientId,
@@ -130,19 +199,28 @@ export function createAuth(ctx) {
           },
         });
         window.google.accounts.id.prompt((n) => {
-          if (n.isNotDisplayed?.() || n.isSkippedMoment?.()) reject(new Error('Google did not show the sign-in prompt. Check the OAuth client ID and that this site is an authorised JavaScript origin.'));
+          if (n.isNotDisplayed?.() || n.isSkippedMoment?.()) {
+            const code = n.getNotDisplayedReason?.() || n.getSkippedReason?.() || 'unknown_reason';
+            reject(new Error(describeGoogleFailure(code)));
+          }
         });
       });
     }
     status('Checking the Google sign-in with the MeshForge server...');
-    const res = await fetch('/api/auth/google', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credential, client_id: clientId }),
-    });
+    let res;
+    try {
+      res = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential, client_id: clientId }),
+      });
+    } catch (err) {
+      throw new Error(describeGoogleFailure('backend_down', err.message));
+    }
     let data = {};
     try { data = await res.json(); } catch { data = {}; }
-    if (!res.ok || !data.ok) throw new Error(data.detail || data.message || `Google sign-in failed (HTTP ${res.status}). The server must be running.`);
+    if (res.status === 404 || res.status === 501) throw new Error(describeGoogleFailure('backend_down'));
+    if (!res.ok || !data.ok) throw new Error(describeGoogleFailure(res.status === 401 ? 'token_rejected' : 'token_rejected', data.detail || data.message || `HTTP ${res.status}`));
     S.token = data.token;
     S.user = data.user;
     localStorage.setItem('mf_auth_token', S.token);
@@ -225,6 +303,8 @@ export function createAuth(ctx) {
     googleClientId,
     setGoogleClientId,
     loginGoogle,
+    checkGoogleSetup,
+    describeGoogleFailure,
     loginOpenAI,
     logout,
     wallet: {

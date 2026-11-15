@@ -40,6 +40,11 @@ Every mutating tool returns `{ ok: true, ... }` or `{ ok: false, error }`. Spawn
 | `list_objects` | Id, label, source, visibility and selection. |
 | `companion_speak` | Shows a companion line. Does not change the scene. |
 | `transfer_credits` | Moves wallet credits through the MeshForge server. |
+| `add_primitive` | Adds a Shift+A primitive. Existing objects stay. |
+| `create_humanoid` | Fits a humanoid rig to the selected mesh and binds automatic weights. |
+| `pose_bone` | Sets a bone rotation in degrees. |
+| `reset_pose` | Restores the rest pose. |
+| `key_pose` | Writes the active bone onto the timeline. |
 
 `POST /api/agent/command` only relays `{ action, params }` to the open page. The page runs the tool. `GET /api/agent/status` lists the same tool names.
 

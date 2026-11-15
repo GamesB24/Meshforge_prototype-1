@@ -19,6 +19,10 @@ import { createAnimationTimeline } from './animation_timeline.js';
 import { buildKioskSample } from './sample_scene.js';
 import { BEHAVIOUR_TYPES, listBehaviours, setBehaviours } from './behaviours.js';
 import { createProject } from './project.js';
+import { createAddMenu } from './addmenu.js';
+import { ADD_ITEMS, triangleCount } from './primitives.js';
+import { createArmatureTools } from './armature.js';
+import { createContentBrowser } from './content_browser.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -142,10 +146,17 @@ function updateInfo() {
   const extra = editor?.infoLine(); $('vinfo').innerHTML = `${viewLabel}<br><small>${model ? `(${objs}) object${objs > 1 ? 's' : ''} · ${Math.round(tris).toLocaleString()} tris` : 'No object'}</small>${extra ? `<br><small class="sel">${extra}</small>` : ''}`;
 }
 
+let addMenu, armature, contentLib;
+const lastPtr = { x: 200, y: 200 };
+document.getElementById('c')?.addEventListener('pointermove', (e) => { lastPtr.x = e.clientX; lastPtr.y = e.clientY; });
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (gameMode?.handleKey?.(e)) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); project?.save(); return; }
+  if (e.shiftKey && (e.key === 'A' || e.key === 'a') && !e.ctrlKey && !e.metaKey && !e.altKey && editor?.mode === 'object' && !gameMode?.isActive?.()) {
+    e.preventDefault(); addMenu?.open(lastPtr.x, lastPtr.y); return;
+  }
+  if ((e.key === 'i' || e.key === 'I') && armature?.mode() === 'pose') { e.preventDefault(); armature.keyPose(); return; }
   if (sculpt?.active && sculpt.handleKey(e)) return;
   if (!gameMode?.isActive?.() && !land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
     if (e.key === 'Delete') { if (editor.sel) { e.preventDefault(); deleteObject(); return; } }
@@ -166,7 +177,7 @@ addEventListener('keydown', (e) => {
 function applyShading() {
   if (!model) return;
   model.traverse((o) => {
-    if (!o.isMesh || o.userData.isOverlay) return;
+    if (!o.isMesh || o.userData.isOverlay || o.userData.isBoneViz || o.userData.isLightMarker) return;
     o.userData.orig ??= o.material;
     if (state.shading === 'chibili' && mats) mats.apply(o, true);
     else { mats?.apply(o, false); o.material = state.shading === 'color' ? o.userData.orig : MAT[state.shading]; }
@@ -193,7 +204,7 @@ document.querySelectorAll('.tool[data-tool]').forEach((b) => b.onclick = () => s
 editor = createEditor({
   scene, controls, canvas, renderer, camera: () => camera, getModel: () => (land?.active ? null : model), jobId: () => state.current, updateInfo: () => updateInfo(),
   status: (m) => { $('progMsg').textContent = m; },
-  setModeUI: (m) => { $('mode').value = m; $('selModes').hidden = m !== 'edit'; if (typeof curWS === 'undefined' || curWS !== 'land') { document.body.dataset.side = m === 'edit' ? 'edit' : m === 'sculpt' ? 'sculpt' : 'object'; syncSideTabs?.(); } },
+  setModeUI: (m) => { const modeEl = $('mode'); if (modeEl && [...modeEl.options].some((o) => o.value === m)) modeEl.value = m; $('selModes').hidden = m !== 'edit'; const side = document.body.dataset.side; if (side === 'armature' || side === 'pose' || side === 'weight') return; if (typeof curWS === 'undefined' || curWS !== 'land') { document.body.dataset.side = m === 'edit' ? 'edit' : m === 'sculpt' ? 'sculpt' : 'object'; syncSideTabs?.(); } },
   sculptEnter: (m) => sculpt.enter(m), sculptExit: () => sculpt.exit(), sculptGeometry: (m) => sculpt?.geometryFor(m), sculptInfo: () => sculpt?.info(),
   setSelModeUI: (m) => document.querySelectorAll('#selModes button').forEach((b) => b.classList.toggle('on', b.dataset.v === m)),
   blockPointer: (e) => (mats?.blockPointer(e) || window.__mfBlockPointer?.(e)), exportMaterial: (m, g) => mats?.exportMaterial(m, g),
@@ -207,19 +218,25 @@ sculpt = createSculpt({
   onTris: (n, warn, act) => { const el = $('triCount'); el.hidden = !act; el.textContent = `${n.toLocaleString()} tris`; el.classList.toggle('warn', warn); updateInfo(); },
 });
 // v5: built-in sculpt base. Icosphere (non-indexed in three.js) - Sculpt mode welds it.
-const SPHERE_DETAIL = { 2: 31, 3: 63, 4: 126 };
+const SPHERE_DETAIL = { 2: 2, 3: 3, 4: 4 };
 function newSphere(level = 2, detail) {
   if (land?.active) setWorkspace('gen');
-  const geo = new THREE.IcosahedronGeometry(0.7, detail ?? SPHERE_DETAIL[level] ?? 31); geo.translate(0, 0.7, 0);
+  const geo = new THREE.IcosahedronGeometry(0.7, detail ?? SPHERE_DETAIL[level] ?? 2); geo.translate(0, 0.7, 0);
   const mat = new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.6, side: THREE.DoubleSide }); offsetMat(mat);
   const mesh = new THREE.Mesh(geo, mat); mesh.name = 'Sphere';
   addSceneMesh(mesh, { label: mesh.name, source: 'primitive' });
   editor.select(mesh);
-  $('progMsg').textContent = 'Added a sphere. The rest of the scene is unchanged.';
-  return editor.setMode('sculpt');
+  $('progMsg').textContent = `Added a sphere (${triangleCount(mesh).toLocaleString()} tris). Subdivide in Sculpt for more detail. The rest of the scene is unchanged.`;
+  return mesh;
 }
 $('sculptron').onclick = async () => {
-  if (!sculpt.active) { if (!model || land?.active) await newSphere(2); else await editor.setMode('sculpt'); if (!sculpt.active) return; sculpt.setDyn(true); return; }
+  if (!sculpt.active) {
+    if (!model || land?.active) await newSphere(2);
+    if (editor.mode !== 'sculpt') await editor.setMode('sculpt');
+    if (!sculpt.active) return;
+    sculpt.setDyn(true);
+    return;
+  }
   sculpt.setDyn(!sculpt.opt.dyn);
 };
 land = initLandscape({ scene, controls, renderer, camera: () => camera, setOrthoSize,
@@ -430,7 +447,12 @@ const bootJobs = refreshHistory().then(async () => {
 // ---------- export buttons + menus ----------
 function exportAny(fmt) { if (land?.active && land.exportAs) return land.exportAs(fmt); return editor.exportAs(fmt); }
 document.querySelectorAll('[data-export]').forEach((b) => b.onclick = () => b.dataset.export === 'zip' ? editor.exportZip() : exportAny(b.dataset.export));
-$('mode').onchange = (e) => editor.setMode(e.target.value);
+$('mode').onchange = (e) => {
+  const v = e.target.value;
+  if (v === 'armature' || v === 'pose' || v === 'weight') { armature?.enter(v); return; }
+  armature?.leave();
+  editor.setMode(v);
+};
 document.querySelectorAll('#selModes button').forEach((b) => b.onclick = () => editor.setSelMode(b.dataset.v));
 const ACTIONS = {
   import: () => $('file').click(), glb: () => exportAny('glb'), obj: () => exportAny('obj'), stl: () => exportAny('stl'), ply: () => exportAny('ply'),
@@ -545,9 +567,9 @@ function contentList(root, depth, out) {
   for (const c of root.children) {
     if (!c || c.userData?.isOverlay || c.userData?.isWireOverlay || c.userData?.isSelection) continue;
     if (c.isMesh && c.parent?.isMesh) continue;
-    if (!(c.isMesh || c.isGroup)) continue;
+    if (!(c.isMesh || c.isGroup || c.isBone || c.isLight || c.isCamera || c.userData?.isEmpty)) continue;
     out.push({ obj: c, depth });
-    if (c.isGroup) contentList(c, depth + 1, out);
+    if (c.isGroup || c.isBone) contentList(c, depth + 1, out);
   }
   return out;
 }
@@ -906,6 +928,8 @@ function newProject() {
   $('progMsg').textContent = 'New project';
 }
 const project = createProject({
+  contentJSON: () => contentLib?.exportJSON(false) || null,
+  applyContent: (data) => contentLib?.importJSON(data),
   THREE,
   getModel: () => model,
   status: (m) => { $('progMsg').textContent = m; },
@@ -923,7 +947,7 @@ const project = createProject({
     return model;
   },
   afterLoad() {
-    applyShading(); updateInfo(); $('drop').classList.add('hidden');
+    applyShading(); armature?.rebuildAll?.(); updateInfo(); $('drop').classList.add('hidden');
     document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
   },
   download: (blob, name) => editor.save(blob, name),
@@ -947,6 +971,13 @@ function syncSideTabs() {
 function setSide(side) {
   document.body.dataset.side = side;
   syncSideTabs();
+  if (side === 'armature' || side === 'pose' || side === 'weight') {
+    if (curWS === 'land') setWorkspace('gen');
+    if (editor.mode !== 'object') editor.setMode('object');
+    armature?.enter(side);
+    return;
+  }
+  armature?.leave();
   if (side === 'land') { if (curWS !== 'land') setWorkspace('land'); return; }
   if (curWS === 'land') setWorkspace('gen');
   if (side === 'sculpt') { if (editor.mode !== 'sculpt') editor.setMode('sculpt'); return; }
@@ -957,7 +988,7 @@ function installSideTabs() {
   const props = document.querySelector('.props');
   const strip = document.createElement('div');
   strip.id = 'sideTabs';
-  strip.innerHTML = `<button type="button" data-side="object" title="Object">◇</button><button type="button" data-side="edit" title="Edit">▦</button><button type="button" data-side="sculpt" title="Sculpt">◉</button><button type="button" data-side="land" title="Landscape">⌂</button>`;
+  strip.innerHTML = `<button type="button" data-side="object" title="Object">◇</button><button type="button" data-side="edit" title="Edit">▦</button><button type="button" data-side="sculpt" title="Sculpt">◉</button><button type="button" data-side="land" title="Landscape">⌂</button><button type="button" data-side="armature" title="Armature">Arm</button><button type="button" data-side="pose" title="Pose">Pose</button><button type="button" data-side="weight" title="Weight">Wgt</button>`;
   props.prepend(strip);
   strip.onclick = (e) => { const b = e.target.closest('button'); if (b) setSide(b.dataset.side); };
   const edit = document.createElement('div');
@@ -985,6 +1016,51 @@ syncSideTabs();
 const _setWorkspace = setWorkspace;
 // keep the side tab in step with the workspace
 const origSet = setWorkspace;
+addMenu = createAddMenu({
+  status: (m) => { $('progMsg').textContent = m; },
+  add: (obj, info) => addSceneMesh(obj, info),
+  addEnvironment: (kind) => addPrimitive(kind),
+});
+armature = createArmatureTools({
+  THREE, canvas, camera: () => camera, editor, anim: animTimeline, getModel: () => model,
+  status: (m) => { $('progMsg').textContent = m; },
+  addObject: (obj, info) => addSceneMesh(obj, info),
+});
+contentLib = createContentBrowser({
+  status: (m) => { $('progMsg').textContent = m; },
+  serialize: () => project.serialize(),
+  loadProject: (data) => project.loadData(data?.format ? data : { ...data, format: 'meshforge-project' }),
+  appendObjects: (records) => project.appendObjects(records),
+  selected: () => editor.sel,
+  spawnAsset: (id, name, rec) => {
+    const pos = rec.geometry?.position;
+    if (!pos?.b64) return false;
+    const bin = atob(pos.b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(u8.buffer), 3));
+    geo.computeVertexNormals();
+    land.setAsset(id, [geo]);
+    land.addSpawner({ kind: id, assetId: id, name, count: 8, paints: ['grass'], maxSlope: 30, scaleMin: 0.8, scaleMax: 1.2 });
+    $('progMsg').textContent = `${name} can be scattered on the landscape`;
+    return true;
+  },
+});
+window.MeshForge.addItem = (id) => { addMenu.choose(id); return editor.sel?.name || null; };
+window.MeshForge.openAddMenu = (x, y) => addMenu.open(x ?? lastPtr.x, y ?? lastPtr.y);
+window.MeshForge.armature = armature;
+window.MeshForge.content = contentLib;
+window.MeshForge.game = gameMode;
+const addDrop = document.querySelector('.menus .menu:nth-child(3) .drop-menu');
+if (addDrop) {
+  addDrop.innerHTML = ADD_ITEMS.map((it) => `<button type="button" data-add="${it.id}">${it.label}</button>`).join('') + '<hr><button type="button" data-add="__menu">More at cursor (Shift+A)</button>';
+  addDrop.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => { document.activeElement?.blur(); if (b.dataset.add === '__menu') addMenu.open(lastPtr.x, lastPtr.y); else addMenu.choose(b.dataset.add); });
+}
+const modeSel = $('mode');
+for (const [value, label] of [['armature', 'Armature Edit'], ['pose', 'Pose Mode'], ['weight', 'Weight Paint']]) {
+  if (modeSel && ![...modeSel.options].some((o) => o.value === value)) { const o = document.createElement('option'); o.value = value; o.textContent = label; modeSel.appendChild(o); }
+}
 window.MeshForge.addPlane = (w = 2, d = 2, sw = 4, sh = 4) => {
   if (land?.active) setWorkspace('gen');
   const geo = new THREE.PlaneGeometry(w, d, sw, sh); geo.rotateX(-Math.PI / 2);

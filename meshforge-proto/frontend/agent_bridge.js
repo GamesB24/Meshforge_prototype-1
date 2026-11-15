@@ -124,6 +124,11 @@ export function createAgentBridge(ctx) {
     { name: 'list_objects', description: 'Shorter object list: id, label, source, visibility, selection.', params: {} },
     { name: 'companion_speak', description: 'Show a companion line. Does not change the scene.', params: { text: 'string' } },
     { name: 'transfer_credits', description: 'Move wallet credits. Needs the MeshForge server.', params: { amount: 100, target: 'string' } },
+    { name: 'add_primitive', description: 'Add a primitive at the origin. Other objects stay. Types match the Shift+A menu.', params: { type: 'cube' } },
+    { name: 'create_humanoid', description: 'Fit a humanoid rig to a mesh and bind automatic weights.', params: { target: 'selected|name' } },
+    { name: 'pose_bone', description: 'Set a bone rotation in degrees.', params: { bone: 'upper_arm.L', rotation: [0, 0, 30] } },
+    { name: 'reset_pose', description: 'Restore the rest pose.', params: {} },
+    { name: 'key_pose', description: 'Keyframe the active bone on the timeline.', params: {} },
   ];
 
   function findObject(target) {
@@ -352,6 +357,21 @@ export function createAgentBridge(ctx) {
     },
 
     // 9. Wallet Credit Transfer (Metaverse kiosk transaction)
+    add_primitive: async ({ type = 'cube' } = {}) => {
+      const name = window.MeshForge.addItem?.(type);
+      return name ? { ok: true, name } : { ok: false, error: 'Unknown primitive' };
+    },
+    create_humanoid: async ({ target = 'selected' } = {}) => {
+      if (target && target !== 'selected') window.MeshForge.selectObject?.(target);
+      const res = window.MeshForge.armature?.humanoid?.();
+      return res ? { ok: true, bones: res.bones, name: res.mesh?.name } : { ok: false, error: 'Select a mesh first' };
+    },
+    pose_bone: async ({ bone = 'hips', rotation = [0, 0, 0] } = {}) => {
+      const ok = window.MeshForge.armature?.poseBone?.(bone, rotation);
+      return ok ? { ok: true, bone } : { ok: false, error: 'No bone with that name' };
+    },
+    reset_pose: async () => ({ ok: !!window.MeshForge.armature?.resetPose?.() }),
+    key_pose: async () => ({ ok: !!window.MeshForge.armature?.keyPose?.() }),
     transfer_credits: async ({ amount = 100, target = 'Google Agent Wallet', reason = 'Store purchase' }) => {
       if (!auth) return { ok: false, error: 'Auth not initialized' };
       try {
@@ -514,8 +534,9 @@ export function createAgentBridge(ctx) {
         <div class="ai-set-row"><label>API key</label><input id="inpKey" type="password" class="ai-inp" placeholder="Paste a key" autocomplete="off"></div>
         <div class="ai-set-row"><button id="btnSaveKey" class="btn sm" type="button">Check and save</button><span id="keyStatus"></span></div>
         <div class="ai-set-row"><label>Google OAuth client ID</label><input id="inpGoogleClient" class="ai-inp" placeholder="….apps.googleusercontent.com" autocomplete="off"></div>
-        <div class="ai-set-row"><button id="btnGoogleAuth" class="btn-gsi" type="button">Sign in with Google</button></div>
-        <p class="hint0">Google sign-in identifies you. It does not create a Gemini API key. Only Gemini uses that login’s Google account; OpenAI, Anthropic and xAI need their own keys. Create a Web OAuth client in Google Cloud, and add this site under Authorised JavaScript origins.</p>
+        <div class="ai-set-row"><button id="btnGoogleAuth" class="btn-gsi" type="button">Sign in with Google</button><button id="btnGoogleCheck" class="btn sm" type="button">Check setup</button></div>
+        <pre id="googleDiag" class="hint0"></pre>
+        <p class="hint0">Google sign-in identifies you. It does not create a Gemini API key. Only Gemini uses that login’s Google account; OpenAI, Anthropic and xAI need their own keys. The client must be a Web application OAuth client, and this page’s origin must be listed exactly.</p>
       </div>
       <div id="aiLog" class="ai-log">
         <div class="ai-msg bot">Hello! I am your MeshForge AI agent. You can type commands or press <b>V</b> to speak instructions.</div>
@@ -567,9 +588,15 @@ export function createAgentBridge(ctx) {
         status(err.message);
       }
     };
+    const diag = panel.querySelector('#googleDiag');
+    const showDiag = (text) => { if (diag) diag.textContent = text || ''; if (text) keyStatus.textContent = text; };
     panel.querySelector('#btnGoogleAuth').onclick = async () => {
-      try { await auth?.loginGoogle(); }
-      catch (err) { status(err.message); keyStatus.textContent = err.message; }
+      try { await auth?.loginGoogle(); showDiag('Signed in. A Gemini API key is still separate.'); }
+      catch (err) { status(err.message); showDiag(err.message); }
+    };
+    panel.querySelector('#btnGoogleCheck').onclick = async () => {
+      const result = await auth?.checkGoogleSetup?.();
+      showDiag(result?.message || 'Google setup could not be checked.');
     };
 
     panel.querySelector('#aiForm').onsubmit = (e) => {

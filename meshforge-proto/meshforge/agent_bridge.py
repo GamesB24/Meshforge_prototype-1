@@ -102,6 +102,7 @@ def bridge_status():
             "spawn_primitive", "delete_object", "transform_object",
             "set_behaviour", "attach_script", "build_level", "generate_level",
             "set_material", "set_shading", "set_environment",
+            "add_primitive", "create_humanoid", "pose_bone", "reset_pose", "key_pose",
             "companion_speak", "transfer_credits",
         ],
         "note": "This process only relays commands to the open browser. The page executes the tools.",
