@@ -1,3 +1,5 @@
+<img width="2550" height="1442" alt="Screenshot 2026-11-15 185329" src="https://github.com/user-attachments/assets/be68708c-b152-472e-94d6-51d35526d62f" />
+
 <img width="1500" height="860" alt="Meshforge v1 test images (3)" src="https://github.com/user-attachments/assets/04ee8a67-db0a-4a10-8952-36c2f2cc120e" />
 To use these files:
 
