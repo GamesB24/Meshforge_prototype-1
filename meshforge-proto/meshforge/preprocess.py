@@ -23,8 +23,41 @@ def has_alpha(img: Image.Image) -> bool:
     return bool((np.asarray(img.convert("RGBA"))[:, :, 3] < 250).any())
 
 
-def preprocess(img: Image.Image, remove_bg: bool, fg_ratio: float = 0.85, recenter_alpha: bool = False) -> Image.Image:
+# Working-image cap. 1024 is the default. Larger than that is refused so an 8 GB
+# GPU is not handed a multi-thousand-pixel upload on top of TripoSR. The old
+# Generate slider only set the marching-cubes grid (default 256) and the mesh
+# looked like a 256 texture. This size is the image, not that grid.
+INPUT_SIZE_DEFAULT = 1024
+INPUT_SIZE_MAX = 1024
+
+
+def clamp_input_size(size) -> int:
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        size = INPUT_SIZE_DEFAULT
+    if size < 128:
+        size = 128
+    if size > INPUT_SIZE_MAX:
+        size = INPUT_SIZE_MAX
+    return size
+
+
+def fit_input(img: Image.Image, size: int = INPUT_SIZE_DEFAULT) -> Image.Image:
+    """Downscale so the longest side is at most `size`. Never upscale. Never uses 256 unless asked."""
+    size = clamp_input_size(size)
+    w, h = img.size
+    longest = max(w, h)
+    if longest <= size:
+        return img
+    scale = size / float(longest)
+    nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    return img.resize((nw, nh), Image.Resampling.LANCZOS)
+
+
+def preprocess(img: Image.Image, remove_bg: bool, fg_ratio: float = 0.85, recenter_alpha: bool = False, input_size: int = INPUT_SIZE_DEFAULT) -> Image.Image:
     """Optional rembg background removal, recentring, then composite on grey (what TripoSR expects)."""
+    img = fit_input(img, input_size)
     global _session
     if remove_bg:
         import rembg

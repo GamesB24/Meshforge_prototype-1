@@ -11,6 +11,12 @@ _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
+def _public_state(state: dict) -> dict:
+    """Job records stay in memory and never include request headers."""
+    out = {k: state.get(k) for k in ("status", "progress", "message", "result", "error")}
+    return out
+
+
 def submit(plugin_id: str, fn, *args, **kwargs) -> str:
     job_id = uuid.uuid4().hex
     state = {"status": "queued", "progress": 0.0, "message": "Queued", "result": None, "error": None}
@@ -53,4 +59,4 @@ def start(fn, *args, **kwargs) -> str:
 def get(plugin_id: str, job_id: str) -> dict | None:
     with _lock:
         state = _jobs.get((plugin_id, job_id))
-        return dict(state) if state else None
+        return _public_state(state) if state else None

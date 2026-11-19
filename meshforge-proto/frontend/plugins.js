@@ -1,4 +1,5 @@
 // MeshForge plugin host. Original MIT code; plugins are trusted local modules, not sandboxed.
+import { createSecretStore } from './secretstore.js';
 export async function initPlugins({ api, setWorkspace, tabs, panels, offline }) {
   const records = new Map();
   let active = null, pluginsLoaded = false;
@@ -27,13 +28,18 @@ export async function initPlugins({ api, setWorkspace, tabs, panels, offline }) 
       }
     } catch (e) { list.textContent = 'Could not read plugins: ' + e.message; }
   };
-  if (offline()) { api.plugins = { list: () => [], active: null, showPlugins: api.showPlugins }; return; }
+  // Secrets are in-memory even when plugin discovery fails. set() never calls the network.
+  if (offline()) {
+    api.plugins = { list: () => [], active: null, showPlugins: api.showPlugins, offline: true };
+    console.warn('MeshForge is offline, so plugin tabs are not loaded. A key cannot be entered until you reload with the server running. Keys are never written to disk.');
+    return;
+  }
 
   try { // One bad entry never blocks subsequent modules.
     const response = await fetch('/api/plugins/all');
     if (!response.ok) throw Error('HTTP ' + response.status);
     var plugins = await response.json(); pluginsLoaded = true;
-  } catch (e) { console.warn('Plugin discovery unavailable:', e.message); return; }
+  } catch (e) { console.warn('Plugin list failed: ' + e.message + '. secrets.set does not contact the server. The key field is missing because the plugin did not load. Reload with the MeshForge server running. Keys are never saved.'); return; }
 
   function activateTab(pid) {
     const r = records.get(pid); if (!r) return;
@@ -60,12 +66,22 @@ export async function initPlugins({ api, setWorkspace, tabs, panels, offline }) 
     try {
       const module = await import(apiPluginURL(p.id, p.manifest.entry)); rec.module = module;
       if (typeof module.activate !== 'function') throw Error('entry module must export activate(mf)');
-      const secrets = rec.secrets;
-      const clearSecrets = () => { secrets.clear(); };
+      const store = createSecretStore({ pluginId: p.id, pluginName: p.manifest?.name });
+      const showSecret = (name) => {
+        const text = store.status(name);
+        const host = rec.panel || panels.right;
+        if (!host) return text;
+        let el = host.querySelector('.mf-secret-status');
+        if (!el) { el = document.createElement('div'); el.className = 'mf-secret-status hint0'; host.appendChild(el); }
+        el.textContent = text;
+        return text;
+      };
+      const clearSecrets = () => { store.clear(); };
       const secretAPI = Object.freeze({
-        set: (name, value) => { if (!/^[A-Za-z0-9_-]+$/.test(name)) throw Error('Invalid secret name'); secrets.set(name, String(value)); },
-        get: name => secrets.get(name), has: name => secrets.has(name), clear: clearSecrets,
-        header: name => { if (!secrets.has(name)) return {}; return { ['X-Plugin-Secret-' + name]: secrets.get(name) }; },
+        set: (name, value) => { const text = store.set(name, value); showSecret(name); return text; },
+        get: name => store.get(name), has: name => store.has(name), clear: clearSecrets,
+        header: name => { const h = store.header(name); if (h && Object.keys(h).length) showSecret(name); return h; },
+        status: name => store.status(name),
       });
       rec.clearSecrets = clearSecrets;
       const backend = (path, opts={}) => fetch(`/api/plugins/${encodeURIComponent(p.id)}/${String(path).replace(/^\//,'')}`, opts);
@@ -99,7 +115,7 @@ export async function initPlugins({ api, setWorkspace, tabs, panels, offline }) 
       console.error(`Plugin ${p.id} failed: ${e?.message || e}`);
     }
   }
-  addEventListener('pagehide', () => { for (const r of records.values()) r.clearSecrets?.(); });
+  addEventListener('pagehide', (ev) => { if (ev.persisted) return; for (const r of records.values()) r.clearSecrets?.(); });
   addEventListener('unload', () => { for (const r of records.values()) r.clearSecrets?.(); });
   addEventListener('meshforge-workspace-change', e => {
     const w=e.detail;

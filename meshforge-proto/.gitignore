@@ -2,7 +2,17 @@
 data/*
 !data/scenes/
 !data/scenes/**
+autosave/
+*.mfproj
+.env
+.env.*
 third_party/
 __pycache__/
 models/
 diagnose.txt
+plugins/*/secrets*
+plugins/*/secrets/**
+plugins/*
+!plugins/_example/
+!plugins/_example/**
+!plugins/plugins-state.json

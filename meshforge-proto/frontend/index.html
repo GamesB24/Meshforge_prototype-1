@@ -2,15 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MeshForge 7.2 · Image to 3D</title>
+<title>MeshForge 8.0 · Image to 3D</title>
 <link rel="icon" href="favicon.ico" sizes="any"><link rel="icon" type="image/png" href="icon.png"><link rel="stylesheet" href="style.css">
 <script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/"}}</script>
 </head>
 <body>
 <header class="topbar">
-  <span class="brand">◆ MeshForge <small>7.2</small></span>
+  <span class="brand">◆ MeshForge <small>8.0</small></span>
   <nav class="menus">
     <div class="menu" tabindex="0"><span>File</span><div class="drop-menu">
+      <button data-act="saveproj">Save project</button><button data-act="saveas">Save project as…</button><button data-act="openproj">Open project…</button><button data-act="autosave">Autosave folder…</button><hr>
       <button data-act="import">Import image…</button><button data-act="scene">Import scene (GLB / manifest)…</button><button data-act="rigimp">Import rigged character (GLB / glTF)…</button><hr>
       <button data-act="glb">Export GLB (.glb)</button><button data-act="obj">Export OBJ (.obj)</button>
       <button data-act="stl">Export STL (.stl)</button><button data-act="ply">Export PLY (.ply)</button><hr>
@@ -54,7 +55,7 @@
   <!-- Viewport -->
   <section class="viewport">
     <div class="vheader">
-      <select id="mode" class="dd"><option value="object">Object Mode</option><option value="edit">Edit Mode</option><option value="sculpt">Sculpt Mode</option></select>
+      <select id="mode" class="dd"><option value="object">Object Mode</option><option value="edit">Edit Mode</option><option value="sculpt">Sculpt Mode</option><option value="pose">Pose Mode</option></select>
       <div class="seg sm" id="selModes" hidden><button data-v="vert" class="on" title="Vertex select (1)">Vert</button><button data-v="edge" title="Edge select (2)">Edge</button><button data-v="face" title="Face select (3)">Face</button></div>
       <span class="sep"></span>
       <button class="ib on" data-view="persp" id="perspBtn" title="Perspective / Ortho (Numpad 5)">Persp</button>
@@ -74,7 +75,7 @@
     </div>
     <img id="photoOv" class="photo-ov" alt="original photo" hidden>
     <input id="rigFile" type="file" accept=".glb,.gltf" hidden>
-    <input id="sceneFile" type="file" accept=".json,.glb,.gltf,application/json,model/gltf-binary" multiple hidden>
+    <input id="sceneFile" type="file" accept=".json,.glb,.gltf,.obj,.mfproj,application/json,model/gltf-binary" multiple hidden>
     <div class="vinfo" id="vinfo">User Perspective<br><small>No object</small></div>
     <label id="drop" class="drop">
       <input id="file" type="file" accept="image/*" hidden>
@@ -97,7 +98,10 @@
         <tr><td>MMB drag / Shift+MMB / wheel</td><td>Orbit / Pan / Zoom</td></tr>
         <tr><td>Numpad 1/3/7 (Ctrl = opposite), 5, .</td><td>Front/Right/Top, Persp/Ortho, Frame</td></tr>
         <tr><td>Z</td><td>Toggle wireframe shading</td></tr>
-        <tr><td>Delete / Shift+D</td><td>Delete / duplicate the selected object (v6 scenes)</td></tr>
+        <tr><td>H / Shift+H</td><td>Hide the selection / show hidden objects</td></tr>
+        <tr><td>Right click</td><td>Group, Ungroup, Join, Select Similar</td></tr>
+        <tr><td>Pose Mode</td><td>Needs a rigged GLB/glTF. Generated meshes have no skeleton.</td></tr>
+        <tr><td>Delete / Shift+D</td><td>Delete / duplicate the selected object</td></tr>
       </table></div>
   </section>
 
@@ -112,7 +116,10 @@
       <div class="row"><span>Engine</span><select id="engine"></select></div>
       <div class="row"><span>Run on</span><div class="seg" id="runner"><button data-v="local" class="on">Local GPU</button><button data-v="cloud">Cloud GPU</button></div></div>
       <div id="runnerHint" class="hint"></div>
-      <div class="row"><span>Resolution</span><input id="res" type="range" min="128" max="384" step="32" value="256"><b id="resV">256</b></div>
+      <div class="row"><span>Input px</span><input id="inres" type="range" min="256" max="1024" step="256" value="1024"><b id="inresV">1024</b></div>
+      <div class="hint0">Input image size. 1024 is the default and the cap, so an 8 GB GPU is not given a larger working image.</div>
+      <div class="row"><span>Mesh grid</span><input id="res" type="range" min="128" max="384" step="32" value="256"><b id="resV">256</b></div>
+      <div class="hint0">Marching-cubes grid, not the photo. 384 is the top of this slider. Lower it if the GPU runs out of memory.</div>
     </details>
     <details open><summary>Topology</summary>
       <div class="row"><span>Remesh</span><select id="remesh"><option value="decimate">Triangles (decimate)</option><option value="quad">Quads (Instant Meshes)</option><option value="none">Keep raw</option></select></div>

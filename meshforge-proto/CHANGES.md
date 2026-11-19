@@ -1,3 +1,24 @@
+# What's new in MeshForge v8
+
+**Undo no longer deletes the level.** Generating or importing a mesh used to call `editor.reset()` (which threw away the undo stack) and then `scene.remove(model)`, so the landscape you had just sent into the level was replaced by the new mesh and Ctrl+Z could not bring it back. v8 adds the new mesh as one undo step. Undo removes only that mesh. Redo puts it back. A guard restores any other object if a bad remove tries to clear the scene.
+
+**Autosave.** The full project is written on a timer (default 2 minutes, change it in the folder dialog) and before generate, import, and sending a landscape. File ▸ Autosave folder… asks the server to check that the folder is writable, and falls back to `data/autosave/`. After you save a project, later autosaves go in `meshforge-autosave` next to that file. The last 5 copies are kept. On startup, if an autosave is newer than the last save, MeshForge asks before restoring it. A project file is a `.mfproj` zip (`scene.json`, `scene.glb`, `materials.json`).
+
+**Outliner.** Objects can be parented. Groups collapse. H hides the selection and Shift+H shows hidden objects. Shift-click and a box drag add to the selection. Right-click offers Group, Ungroup, Join (one mesh, materials kept as slots) and Select Similar (same source, same material, or a close vertex count and shape).
+
+**Landscape.** House, tower, cottage and shed each have a count, a density and a mesh slot. Trees have count, density, scale, rotation jitter and area, and their own mesh slot. Drag an asset from the content browser onto a slot or into the viewport. Names and proportions sort assets into building, tree, prop or character. Sending a landscape to the level builds Landscape > Terrain, Water, Buildings (one mesh per type), Trees.
+
+**Imports keep materials.** GLB, glTF and OBJ+MTL keep UVs, textures and materials. Multi-part files become a group of meshes instead of one vertex-colour bake.
+
+**Image size.** The old Resolution slider is the marching-cubes grid (default 256, max 384). It is not the photo. Input px defaults to 1024 and will not go higher, so an 8 GB GPU is not handed a larger working image. Smaller photos are not upscaled.
+
+**Pose Mode.** The mode menu has Pose Mode. A generated mesh has no skeleton, so Pose Mode stays in Object Mode and says you need a rigged GLB or glTF (for example a Blender export with Skinning on).
+
+**Secrets stay in the tab.** A plugin key is held in memory for the session and marked "not verified". If the plugin never attaches it to a request, the status says so. Scene From Photo does not call a model provider, so typing a key does not sign you in. Keys are not written to autosaves, plugin state, job records or logs. See SECURITY.md.
+
+## Tested
+Logic tests, server tests (image cap, autosave rotation, a fake plugin key absent from the app folder and logs) and a headless Chrome pass (add, undo, redo, landscape hierarchy, pose message, hide, secret status). Not tested on Windows, on an RTX 4060, with TripoSR weights, or with a real mouse.
+
 # What's new in MeshForge v7.2
 
 **Plugin IDs remain exact.** `jobs.start()` uses the manifest ID set at module load, so `scene-from-photo` and `_example` job status URLs work without underscore heuristics. `jobs.submit()` is unchanged. Favicon is now shipped at `/favicon.ico` and linked by the viewer.

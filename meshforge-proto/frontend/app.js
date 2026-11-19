@@ -4,13 +4,17 @@ import { createRig, glbHasSkins } from './rig.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/GLTFLoader.js';
-import { createEditor } from './editor.js';
+import { createEditor, makeZip, readStoredZip } from './editor.js';
 import { initLandscape } from './landui.js';
 import { createSculpt } from './sculpt.js';
 import { createSceneIO, bakeObject } from './scene.js';
 import { createMaterials } from './materials.js';
 import { CHIBILI } from './chibili.js';
 import { copyData } from './mfdata.js';
+import { undoAdded, redoAdded } from './historyguard.js';
+import { groupNodes, ungroupNode, joinMeshes, similarMeshes } from './sceneactions.js';
+import { createRecover } from './recover.js';
+import { readDropId, assetById, objectFromAsset, importFile, mountBrowser } from './content.js';
 import { initPlugins } from './plugins.js';
 
 const $ = (id) => document.getElementById(id);
@@ -39,6 +43,7 @@ const axX = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.V
 const axZ = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.001, -5), new THREE.Vector3(0, 0.001, 5)]), new THREE.LineBasicMaterial({ color: 0x6a9c3a }));
 scene.add(axX, axZ);
 let model = null;
+let recover = null;
 let editor = null;
 let sculpt = null; // Sculpt mode (v5)
 let curTool = 'select';
@@ -137,7 +142,8 @@ function updateInfo() {
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (sculpt?.active && sculpt.handleKey(e)) return;
-  if (!land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {   // v6 delete / duplicate
+  if (!land?.active && editor.mode === 'object' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.key === 'h' || e.key === 'H') { e.preventDefault(); e.shiftKey ? unhideAll() : hideSelected(); return; }
     if (e.key === 'Delete') { if (editor.sel) { e.preventDefault(); deleteObject(); return; } }
     if (e.shiftKey && (e.key === 'D' || e.key === 'd')) { if (editor.sel) { e.preventDefault(); duplicateObject(); return; } }
   }
@@ -188,6 +194,8 @@ editor = createEditor({
   setSelModeUI: (m) => document.querySelectorAll('#selModes button').forEach((b) => b.classList.toggle('on', b.dataset.v === m)),
   blockPointer: (e) => (mats?.blockPointer(e) || window.__mfBlockPointer?.(e)), exportMaterial: (m, g) => mats?.exportMaterial(m, g),
   blockMode: (m, mode) => window.__mfBlockMode?.(m, mode), extendExport: (g, o) => window.__mfExtendExport?.(g, o), skipExport: (m) => window.__mfSkipExport?.(m),
+  hasRig: () => !!window.__meshforge?.rig?.info?.().skinned,
+  onContextMenu: (e, list) => openObjectMenu(e, list),
 });
 sculpt = createSculpt({
   scene, controls, canvas, renderer, camera: () => camera, status: (m) => { $('progMsg').textContent = m; }, updateInfo: () => updateInfo(),
@@ -200,11 +208,12 @@ sculpt = createSculpt({
 const SPHERE_DETAIL = { 2: 31, 3: 63, 4: 126 };
 function newSphere(level = 2, detail) {
   if (land?.active) setWorkspace('gen');
-  editor.reset(); if (model) scene.remove(model);
+  editor.leaveModes();
   const geo = new THREE.IcosahedronGeometry(0.7, detail ?? SPHERE_DETAIL[level] ?? 31); geo.translate(0, 0.7, 0);
   const mat = new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.6, side: THREE.DoubleSide }); offsetMat(mat);
   const mesh = new THREE.Mesh(geo, mat); mesh.name = 'Sphere';
-  model = new THREE.Group(); model.add(mesh); model.userData.norm = new THREE.Matrix4(); scene.add(model); state.current = null;
+  const root = ensureScene(true);
+  addUndoable(root, mesh, { id: 'sphere', label: 'Sphere', source: 'primitive' }, 'Add sphere');
   applyShading(); frameModel(); updateInfo(); $('drop').classList.add('hidden');
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   editor.select(mesh); return editor.setMode('sculpt');
@@ -224,7 +233,7 @@ function setWorkspace(w) {
   ['gen', 'land', 'shader', 'uv'].forEach((k) => { $({ gen: 'tabGen', land: 'tabLand', shader: 'tabShader', uv: 'tabUV' }[k])?.classList.toggle('on', k === w); document.body.classList.toggle('ws-' + k, k === w); });
   const on = w === 'land';
   if (on !== land.active) {
-    if (on) { editor.reset(); setTool('select'); land.enter(); } else land.exit();
+    if (on) { editor.leaveModes(); setTool('select'); land.enter(); } else land.exit();
     if (model) model.visible = !on; grid.visible = axX.visible = axZ.visible = !on && $('ovGrid').checked;
     $('drop').classList.toggle('hidden', on || !!model);
   }
@@ -241,21 +250,26 @@ $('tabShader').onclick = () => setWorkspace('shader'); $('tabUV').onclick = () =
 window.MeshForgeLandscape = Object.assign(land, { setWorkspace });
 renderer.setAnimationLoop(() => { editor.tick(); sculpt.tick(); if (land?.active && state.shading === 'chibili') applyLandShading(); mats?.tick(); window.__mfTick?.(); controls.update(); renderer.render(scene, camera); drawGizmo(); });
 
-function loadGLB(url, onDone, onError) {
+function loadGLB(url, onDone, onError, opts = {}) {
   new GLTFLoader().load(url, (g) => {
-    editor.reset();
-    if (model) scene.remove(model);
-    model = g.scene;
-    model.animations = g.animations || [];
-    model.traverse((o) => { if (o.isMesh && o.material && !Array.isArray(o.material) && (o.material.userData?.chibili || o.material.userData?.mfTexture)) mats?.adopt(o, [{ material: o.material, triStart: 0, triCount: (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3 }]); });
-    model.traverse((o) => { if (o.isMesh && o.material) { offsetMat(o.material); o.material.side = THREE.DoubleSide; o.material.vertexColors = !!o.geometry.attributes.color; if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); } });
-    const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
-    const s = 1.4 / Math.max(size.x, size.y, size.z);
-    model.scale.setScalar(s); model.position.set(-c.x * s, -box.min.y * s, -c.z * s); model.updateMatrix(); model.userData.norm = model.matrix.clone();
-    model.visible = !land?.active; scene.add(model); applyShading(); frameModel(); updateInfo();
-    $('drop').classList.add('hidden'); window.__mfAfterGLB?.(model);
-    onDone?.(model);
-  }, undefined, (e) => { console.error('GLB load failed', e); onError?.(e); });
+    try {
+      editor.leaveModes();
+      let rigged = false; g.scene.traverse((o) => { if (o.isSkinnedMesh) rigged = true; });
+      const node = rigged ? g.scene : bakeObject(g.scene, opts.name || g.scene.name || 'Generated');
+      if (!node) throw new Error('File has no mesh');
+      if (rigged && opts.name) node.name = opts.name;
+      node.animations = g.animations || [];
+      node.traverse((o) => { if (o.isMesh && o.material) { const mats = Array.isArray(o.material) ? o.material : [o.material]; mats.forEach((m) => { offsetMat(m); m.side = THREE.DoubleSide; if (m.map) m.vertexColors = false; else m.vertexColors = !!o.geometry.attributes.color; }); if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); } });
+      const root = ensureScene(true);
+      fitNewcomer(node, root);
+      addUndoable(root, node, { id: opts.id || 'generated', label: node.name || 'Generated', source: opts.source || 'generated' }, opts.label || 'Add generated mesh');
+      node.visible = !land?.active;
+      applyShading(); if (!opts.quietFrame) frameModel(); updateInfo();
+      $('drop').classList.add('hidden'); window.__mfAfterGLB?.(node);
+      document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
+      onDone?.(node);
+    } catch (err) { console.error('GLB load failed', err); onError?.(err); }
+  }, undefined, (e) => { console.error('GLB load failed', e); onError?.(e instanceof Error ? e : new Error(String(e?.message || e))); });
 }
 
 // ---------- config ----------
@@ -286,19 +300,32 @@ $('file').onchange = (e) => setFile(e.target.files[0]);
 $('upload2').onclick = () => $('file').click();
 ['dragenter', 'dragover'].forEach((ev) => vp.addEventListener(ev, (e) => { e.preventDefault(); vp.classList.add('over'); }));
 ['dragleave', 'drop'].forEach((ev) => vp.addEventListener(ev, (e) => { e.preventDefault(); vp.classList.remove('over'); }));
-vp.addEventListener('drop', async (e) => { const f = e.dataTransfer.files[0]; if (f && /\.gl(b|tf)$/i.test(f.name)) { if (glbHasSkins(await f.arrayBuffer())) await window.MeshForge.loadRig(f); else await sceneIO.loadScene(f); return; } setFile(f); });
+vp.addEventListener('drop', async (e) => {
+  const droppedId = readDropId(e.dataTransfer);
+  if (droppedId && assetById(droppedId)) { await placeAsset(assetById(droppedId)); return; }
+  const f = e.dataTransfer.files?.[0];
+  if (f && /\.(glb|gltf|obj)$/i.test(f.name)) {
+    try { await recover?.write('before-import'); } catch { /* continue */ }
+    if (/\.gl(b|tf)$/i.test(f.name) && glbHasSkins(await f.arrayBuffer())) { await window.MeshForge.loadRig(f); return; }
+    const asset = await importFile(f);
+    await placeAsset(asset);
+    return;
+  }
+  setFile(f);
+});
 $('runner').querySelectorAll('button').forEach((b) => b.onclick = () => {
   $('runner').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); state.runner = b.dataset.v; updateRunnerHint();
 });
 const fmtK = (n) => n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
 const bind = (id, f) => { const el = $(id); el.oninput = () => $(id + 'V').textContent = f(+el.value); };
-bind('res', (v) => v); bind('tf', fmtK); bind('sa', (v) => v + '°'); bind('sm', (v) => v.toFixed(2));
+bind('res', (v) => v); if ($('inres')) bind('inres', (v) => v); bind('tf', fmtK); bind('sa', (v) => v + '°'); bind('sm', (v) => v.toFixed(2));
 
 // ---------- jobs ----------
 $('go').onclick = async () => {
+  try { await recover?.write('before-generate'); } catch { /* generation still runs */ }
   const fd = new FormData();
   fd.append('image', state.file); fd.append('engine', $('engine').value); fd.append('runner', state.runner); fd.append('remove_bg', $('rembg').checked);
-  fd.append('params', JSON.stringify({ resolution: +$('res').value, remesh: $('remesh').value, target_faces: +$('tf').value,
+  fd.append('params', JSON.stringify({ resolution: +$('res').value, input_size: +($('inres')?.value || 1024), remesh: $('remesh').value, target_faces: +$('tf').value,
     sharp_angle: +$('sa').value, smooth_strength: +$('sm').value, split_components: $('split').checked }));
   $('go').disabled = true;
   const r = await fetch('/api/jobs', { method: 'POST', body: fd });
@@ -342,9 +369,12 @@ async function refreshHistory() {
     li.querySelector('.del').onclick = async (e) => { e.stopPropagation(); await fetch(`/api/jobs/${j.id}`, { method: 'DELETE' }); refreshHistory(); };
   });
 }
-loadConfig(); refreshHistory().then(async () => {  // reopen the latest result
-  if (new URLSearchParams(location.search).get('scene')) return;
-  try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j) show(j); } catch { /* offline */ }
+loadConfig(); refreshHistory().then(async () => {
+  const q = new URLSearchParams(location.search);
+  if (q.get('scene')) return;
+  if (!q.get('noautosave')) { try { if (await recover?.maybeRecover()) return; } catch { /* offline */ } }
+  if (model) return;
+  try { const list = await (await fetch('/api/jobs')).json(); const j = Array.isArray(list) && list.find((x) => x.status === 'done'); if (j && !model) show(j); } catch { /* offline */ }
 });
 // ---------- export buttons + menus ----------
 function exportAny(fmt) { if (land?.active && land.exportAs) return land.exportAs(fmt); return editor.exportAs(fmt); }
@@ -371,7 +401,7 @@ window.__meshforge = { newSphere, get sculpt() { return sculpt; }, loadGLB, show
 // ---------- v5.1 public integration API (additive; see docs/integration.md) ----------
 // MeshForge.loadGLB(url | Blob | File | ArrayBuffer) -> Promise<THREE.Object3D>; exportGLB() -> Promise<Blob>
 window.MeshForge = {
-  version: '7.2',
+  version: '8.0',
   loadGLB(src) {
     let url = src, revoke = false;
     if (src instanceof ArrayBuffer) src = new Blob([src], { type: 'model/gltf-binary' });
@@ -386,9 +416,57 @@ window.MeshForge = {
 
 
 // ---------- v6 scenes: many separate objects (see docs/scene-import.md) ----------
+function ensureScene(append) {
+  if (append && model?.userData.isScene) return model;
+  if (append && model && !model.userData.isScene) {
+    const root = new THREE.Group(); root.name = 'Scene'; root.userData.isScene = true; root.userData.norm = new THREE.Matrix4();
+    model.updateMatrixWorld(true);
+    model.children.filter((c) => !c.userData.isOverlay).forEach((c) => { c.applyMatrix4(model.matrixWorld); root.add(c); });
+    scene.remove(model); model = root; scene.add(root); model.visible = !land?.active;
+    return root;
+  }
+  if (append && !model) {
+    const root = new THREE.Group(); root.name = 'Scene'; root.userData.isScene = true; root.userData.norm = new THREE.Matrix4();
+    model = root; scene.add(root); model.visible = !land?.active; return root;
+  }
+  const root = new THREE.Group(); root.name = 'Scene'; root.userData.isScene = true; root.userData.norm = new THREE.Matrix4();
+  const prev = model;
+  editor.leaveModes();
+  if (prev) scene.remove(prev);
+  model = root; scene.add(root); model.visible = !land?.active; state.current = null; explodeK = 0; if ($('explode')) $('explode').value = 0;
+  editor.clearHistory();
+  if (prev) editor.pushHistory({ label: 'Open scene', undo: () => { scene.remove(root); scene.add(prev); model = prev; updateInfo(); }, redo: () => { scene.remove(prev); scene.add(root); model = root; updateInfo(); } });
+  return root;
+}
+function fitNewcomer(node, root) {
+  node.position.set(0, 0, 0); node.scale.set(1, 1, 1); node.rotation.set(0, 0, 0); node.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(node);
+  const size = box.getSize(new THREE.Vector3());
+  const longest = Math.max(size.x, size.y, size.z, 1e-6);
+  const s = 1.4 / longest;
+  node.scale.setScalar(s);
+  const box2 = new THREE.Box3().setFromObject(node);
+  const c = box2.getCenter(new THREE.Vector3());
+  node.position.set(-c.x, -box2.min.y, -c.z);
+  const others = root.children.filter((o) => o !== node && !o.userData.isOverlay);
+  if (others.length) {
+    const b = new THREE.Box3(); others.forEach((o) => b.expandByObject(o));
+    node.position.x += b.max.x + size.x * s * 0.2 + 0.4;
+  }
+}
+function addUndoable(parent, node, info, label) {
+  sceneIO.addObject(parent, node, info);
+  const nodes = [node];
+  editor.pushHistory({
+    label: label || ('Add ' + node.name),
+    undo: () => { if (editor.sel === node || editor.selection?.().includes(node)) editor.select(null); undoAdded(parent, nodes); updateInfo(); },
+    redo: () => { redoAdded(parent, nodes); updateInfo(); },
+  });
+  return node;
+}
 const sceneIO = createSceneIO({
-  getRoot: () => model, editor, status: (m) => { $('progMsg').textContent = m; },
-  setRoot: (root) => { editor.reset(); if (model) scene.remove(model); model = root; model.visible = !land?.active; scene.add(model); state.current = null; explodeK = 0; $('explode').value = 0; },
+  getRoot: () => model, editor, status: (m) => { $('progMsg').textContent = m; }, ensureScene,
+  setRoot: (root) => { editor.leaveModes(); if (model && model !== root) scene.remove(model); model = root; model.visible = !land?.active; if (!scene.children.includes(root)) scene.add(root); state.current = null; explodeK = 0; $('explode').value = 0; },
   afterLoad: (man, base) => {
     applyShading(); setShading('color'); frameModel(); updateInfo();
     $('drop').classList.add('hidden'); document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
@@ -396,19 +474,38 @@ const sceneIO = createSceneIO({
     const ph = man?.photo; $('photoOv').hidden = true; $('oPhoto').hidden = !ph; if (ph) $('photoOv').src = sceneIO.resolve(ph);
   },
 });
-function sceneObjects() { return model ? model.children.filter((o) => o.isMesh && !o.userData.isOverlay) : []; }
+function sceneObjects() {
+  if (!model) return [];
+  if (model.userData.isScene) return model.children.filter((o) => (o.isMesh || o.isGroup) && o.userData.sceneId && !o.userData.isOverlay);
+  return model.children.filter((o) => o.isMesh && !o.userData.isOverlay);
+}
+function walkNodes(obj, depth, out) {
+  const kids = (obj.children || []).filter((c) => (c.isMesh || c.isGroup) && !c.userData.isOverlay && !c.userData.isSelection);
+  for (const c of kids) { out.push({ node: c, depth }); if (!collapsed.has(c.uuid)) walkNodes(c, depth + 1, out); }
+}
 var olistKey = '';
+const collapsed = new Set();
 function refreshOutliner() {
   const el = $('outliner'); if (!el) return;
-  const objs = model?.userData.isScene && !land?.active ? sceneObjects() : [];
-  el.hidden = !objs.length; if (!objs.length) { olistKey = ''; return; }
-  const sel = editor?.sel;
-  const key = objs.map((o) => `${o.uuid}${o.visible ? 1 : 0}${o === sel ? 1 : 0}${o.name}`).join('|'); if (key === olistKey) return; olistKey = key;
+  const roots = model?.userData.isScene && !land?.active ? sceneObjects() : [];
+  el.hidden = !roots.length; if (!roots.length) { olistKey = ''; return; }
+  const rows = []; roots.forEach((o) => { rows.push({ node: o, depth: 0 }); if (!collapsed.has(o.uuid)) walkNodes(o, 1, rows); });
+  const selSet = new Set(editor?.selection?.() || []);
+  const key = rows.map((r) => `${r.node.uuid}${r.node.visible ? 1 : 0}${selSet.has(r.node) ? 1 : 0}${collapsed.has(r.node.uuid) ? 'c' : ''}${r.depth}${r.node.name}`).join('|');
+  if (key === olistKey) return; olistKey = key;
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  $('olist').innerHTML = objs.map((o, i) => `<li data-i="${i}" class="${o === sel ? 'sel' : ''} ${o.visible ? '' : 'hid'}"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name)}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
+  $('olist').innerHTML = rows.map((r, i) => {
+    const o = r.node; const kids = o.children?.some((c) => (c.isMesh || c.isGroup) && !c.userData.isOverlay);
+    return `<li data-i="${i}" class="${selSet.has(o) ? 'sel' : ''} ${o.visible ? '' : 'hid'}" style="padding-left:${8 + r.depth * 14}px"><button class="twisty" ${kids ? '' : 'hidden'}>${collapsed.has(o.uuid) ? '▸' : '▾'}</button><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || o.name)}">${esc(o.name || 'Object')}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`;
+  }).join('');
   $('olist').querySelectorAll('li').forEach((li) => {
-    const o = objs[+li.dataset.i];
-    li.onclick = (e) => { if (e.target.classList.contains('eye')) { o.visible = !o.visible; if (!o.visible && editor.sel === o && editor.mode === 'object') editor.select(null); updateInfo(); return; } selectObject(o); };
+    const o = rows[+li.dataset.i].node;
+    li.onclick = (e) => {
+      if (e.target.classList.contains('twisty')) { if (collapsed.has(o.uuid)) collapsed.delete(o.uuid); else collapsed.add(o.uuid); olistKey = ''; updateInfo(); return; }
+      if (e.target.classList.contains('eye')) { o.visible = !o.visible; if (!o.visible && editor.sel === o) editor.select(null); updateInfo(); return; }
+      if (e.shiftKey) editor.select(o, { toggle: true }); else selectObject(o);
+    };
+    li.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); if (!editor.selection().includes(o)) editor.select(o); openObjectMenu(e, editor.selection()); };
   });
 }
 async function selectObject(o) {
@@ -428,14 +525,15 @@ async function duplicateObject() {
   c.userData = { sceneId: src.userData.sceneId ? `${src.userData.sceneId}_copy${dupN}` : undefined, label: c.name, source: src.userData.source, ref: src.userData.ref, avgColor: src.userData.avgColor, note: src.userData.note };
   if (src.userData.mf) { c.userData.mf = JSON.parse(JSON.stringify(src.userData.mf)); const t = mats?.texOf(src); if (t) mats.adoptTextureImage(c, t.canvas, t.name); }
   const parent = src.parent; parent.add(c); applyShading();
-  editor.pushHistory({ label: 'Duplicate object', undo: () => { if (editor.sel === c) editor.select(null); parent.remove(c); updateInfo(); }, redo: () => { parent.add(c); updateInfo(); } });
+  editor.pushHistory({ label: 'Duplicate object', undo: () => { if (editor.sel === c) editor.select(null); undoAdded(parent, [c]); updateInfo(); }, redo: () => { redoAdded(parent, [c]); updateInfo(); } });
   editor.select(c); updateInfo(); $('progMsg').textContent = `Duplicated ${src.name} → ${c.name} · Ctrl+Z to undo`; return c;
 }
 async function deleteObject(o = editor.sel) {
   if (!o || !o.parent) return false;
   if (editor.mode !== 'object') await editor.setMode('object');
-  const parent = o.parent; editor.select(null); parent.remove(o);
-  editor.pushHistory({ label: 'Delete object', undo: () => { parent.add(o); updateInfo(); }, redo: () => { if (editor.sel === o) editor.select(null); parent.remove(o); updateInfo(); } });
+  const parent = o.parent; editor.select(null); 
+  editor.pushHistory({ label: 'Delete object', undo: () => { redoAdded(parent, [o]); updateInfo(); }, redo: () => { if (editor.sel === o) editor.select(null); undoAdded(parent, [o]); updateInfo(); } });
+  undoAdded(parent, [o]);
   updateInfo(); $('progMsg').textContent = `Deleted ${o.name} · Ctrl+Z to undo`; return true;
 }
 var explodeK = 0;
@@ -448,9 +546,103 @@ function setExplode(k) {
 }
 $('explode').oninput = (e) => setExplode(+e.target.value);
 $('oDup').onclick = () => duplicateObject(); $('oDel').onclick = () => deleteObject();
+function selectionMeshes() { return (editor.selection?.() || []).filter((o) => o); }
+function hideSelected() {
+  const list = selectionMeshes().filter((o) => o.visible);
+  if (!list.length) { $('progMsg').textContent = 'Nothing selected to hide'; return; }
+  const prev = list.map((o) => o.visible);
+  list.forEach((o) => { o.visible = false; });
+  editor.pushHistory({ label: 'Hide', undo: () => { list.forEach((o, i) => { o.visible = prev[i]; }); updateInfo(); }, redo: () => { list.forEach((o) => { o.visible = false; }); updateInfo(); } });
+  editor.select(null); updateInfo(); $('progMsg').textContent = `Hid ${list.length} object(s). Shift+H shows hidden objects.`;
+}
+function unhideAll() {
+  const list = [];
+  model?.traverse((o) => { if ((o.isMesh || o.isGroup) && !o.userData.isOverlay && o.visible === false) list.push(o); });
+  if (!list.length) { $('progMsg').textContent = 'Nothing is hidden'; return; }
+  list.forEach((o) => { o.visible = true; });
+  editor.pushHistory({ label: 'Unhide', undo: () => { list.forEach((o) => { o.visible = false; }); updateInfo(); }, redo: () => { list.forEach((o) => { o.visible = true; }); updateInfo(); } });
+  updateInfo(); $('progMsg').textContent = `Showed ${list.length} hidden object(s)`;
+}
+async function placeAsset(asset) {
+  if (!asset) return null;
+  const node = objectFromAsset(asset);
+  node.userData.assetId = asset.id;
+  node.traverse((o) => { if (o.isMesh) o.userData.assetId = asset.id; });
+  const root = ensureScene(true);
+  fitNewcomer(node, root);
+  addUndoable(root, node, { id: asset.id, label: asset.name, source: asset.category }, 'Add ' + asset.name);
+  applyShading(); updateInfo(); $('drop').classList.add('hidden');
+  $('progMsg').textContent = `Added ${asset.name} (${asset.category}). Ctrl+Z removes only this object.`;
+  return node;
+}
+const objMenu = document.createElement('div'); objMenu.id = 'objMenu'; objMenu.className = 'objmenu'; objMenu.hidden = true;
+objMenu.innerHTML = '<button data-m="group">Group</button><button data-m="ungroup">Ungroup</button><button data-m="join">Join</button><button data-m="similar">Select Similar</button>';
+document.body.appendChild(objMenu);
+function openObjectMenu(e, list) {
+  objMenu.hidden = false;
+  objMenu.style.left = Math.min(e.clientX, innerWidth - 180) + 'px';
+  objMenu.style.top = Math.min(e.clientY, innerHeight - 140) + 'px';
+  objMenu.dataset.n = String(list.length);
+}
+addEventListener('pointerdown', (e) => { if (!objMenu.hidden && !objMenu.contains(e.target)) objMenu.hidden = true; });
+objMenu.onclick = (e) => {
+  const act = e.target.dataset.m; if (!act) return;
+  objMenu.hidden = true;
+  const list = selectionMeshes();
+  if (act === 'group') doGroup(list);
+  else if (act === 'ungroup') doUngroup(list);
+  else if (act === 'join') doJoin(list);
+  else if (act === 'similar') doSimilar(list[0]);
+};
+function doGroup(list) {
+  const nodes = list.filter((n) => n.parent);
+  if (nodes.length < 2) { $('progMsg').textContent = 'Select two or more objects to group'; return; }
+  const made = groupNodes(nodes, THREE); if (!made) { $('progMsg').textContent = 'Group works on objects that share a parent'; return; }
+  made.group.userData.sceneId = 'group_' + Math.random().toString(36).slice(2, 8);
+  made.group.userData.source = 'group';
+  editor.pushHistory({ label: 'Group', undo: () => { made.before.forEach((r) => { made.parent.attach(r.node); }); made.parent.remove(made.group); updateInfo(); }, redo: () => { made.parent.add(made.group); nodes.forEach((n) => made.group.attach(n)); updateInfo(); } });
+  editor.select(made.group); updateInfo(); $('progMsg').textContent = `Grouped ${nodes.length} objects`;
+}
+function doUngroup(list) {
+  const group = list.find((n) => n.isGroup && n.children.some((c) => c.isMesh || c.isGroup));
+  if (!group) { $('progMsg').textContent = 'Select a group to ungroup'; return; }
+  const rec = ungroupNode(group); if (!rec) return;
+  editor.pushHistory({ label: 'Ungroup', undo: () => { rec.parent.add(rec.group); rec.records.forEach((r) => rec.group.attach(r.node)); updateInfo(); }, redo: () => { rec.records.forEach((r) => rec.parent.attach(r.node)); rec.parent.remove(rec.group); updateInfo(); } });
+  updateInfo(); $('progMsg').textContent = 'Ungrouped';
+}
+function doJoin(list) {
+  const meshes = [];
+  list.forEach((n) => n.traverse?.((o) => { if (o.isMesh && !o.userData.isOverlay) meshes.push(o); }));
+  const unique = [...new Set(meshes)];
+  if (unique.length < 2) { $('progMsg').textContent = 'Select two or more meshes to join'; return; }
+  const made = joinMeshes(unique, THREE);
+  if (!made) { $('progMsg').textContent = 'Could not join those meshes'; return; }
+  made.mesh.userData.sceneId = 'join_' + Math.random().toString(36).slice(2, 8);
+  made.mesh.userData.source = 'join';
+  made.mesh.userData.mf = { slots: (Array.isArray(made.mesh.material) ? made.mesh.material : [made.mesh.material]).map((m, i) => m.name || 'slot_' + i), active: 0, albedo: 'material', vcol: false };
+  unique.forEach((m) => m.parent?.remove(m));
+  editor.pushHistory({ label: 'Join', undo: () => { made.parent.remove(made.mesh); unique.forEach((m) => made.parent.add(m)); updateInfo(); }, redo: () => { unique.forEach((m) => m.parent?.remove(m)); made.parent.add(made.mesh); updateInfo(); } });
+  editor.select(made.mesh); applyShading(); updateInfo(); $('progMsg').textContent = `Joined ${unique.length} meshes. Materials stay as slots.`;
+}
+function doSimilar(seed) {
+  if (!seed) { $('progMsg').textContent = 'Select an object first'; return; }
+  const pool = []; model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay) pool.push(o); });
+  const hits = similarMeshes(seed.isMesh ? seed : (seed.children?.find((c) => c.isMesh) || seed), pool);
+  const many = [seed.isMesh ? seed : hits[0], ...hits].filter(Boolean);
+  editor.select(null, { many: [...new Set(many)] });
+  $('progMsg').textContent = `Selected ${editor.selection().length} similar object(s)`;
+  updateInfo();
+}
 $('oPhoto').onclick = () => { $('photoOv').hidden = !$('photoOv').hidden; };
 $('photoOv').onclick = () => { $('photoOv').hidden = true; };
-$('sceneFile').onchange = async (e) => { const f = [...e.target.files]; e.target.value = ''; if (f.length === 1 && /\.gl(b|tf)$/i.test(f[0].name) && glbHasSkins(await f[0].arrayBuffer())) { await window.MeshForge.loadRig(f[0]); return; } if (f.length) await sceneIO.loadScene(f.length === 1 ? f[0] : f); };
+$('sceneFile').onchange = async (e) => {
+  const f = [...e.target.files]; e.target.value = '';
+  try { await recover?.write('before-import'); } catch { /* continue */ }
+  if (f.length === 1 && /\.mfproj$/i.test(f[0].name)) { await openProjectBytes(await f[0].arrayBuffer()); return; }
+  if (f.length === 1 && /\.gl(b|tf)$/i.test(f[0].name) && glbHasSkins(await f[0].arrayBuffer())) { await window.MeshForge.loadRig(f[0]); return; }
+  if (f.length === 1 && /\.obj$/i.test(f[0].name)) { const asset = await importFile(f[0]); await placeAsset(asset); return; }
+  if (f.length) await sceneIO.loadScene(f.length === 1 ? f[0] : f);
+};
 async function exportBundle() {
   const manifest = sceneIO.exportScene();
   if (explodeK) manifest.objects.forEach((o, i) => { const m = sceneObjects().find((x) => x.userData.sceneId === o.id); if (m) o.position[2] = +(m.position.z - (m.userData.exz || 0)).toFixed(5); });
@@ -461,19 +653,22 @@ async function exportSceneFiles() {
   try { const { manifest, glb } = await exportBundle(); editor.save(glb, 'scene.glb'); editor.save(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }), 'scene.json'); $('progMsg').textContent = `Exported scene.glb + scene.json (${manifest.objects.length} objects)`; }
   catch (err) { $('progMsg').textContent = 'Scene export failed: ' + err.message; }
 }
-// Landscape -> scene: copy the current terrain (and buildings) into the scene as one object, scaled to fit.
+// Landscape -> scene as Landscape > Terrain, Water, Buildings by type, Trees.
 async function sendLandscapeToScene(opts = {}) {
   const terrain = land.terrain; if (!terrain) { $('progMsg').textContent = 'Open the Landscape tab and build a landscape first'; return null; }
+  try { await recover?.write('before-landscape'); } catch { /* still send */ }
   if (land.active) setWorkspace('gen');
-  const root = sceneIO.ensureRoot(true);
-  const m = bakeObject(terrain, 'Landscape'); if (!m) return null;
+  const root = ensureScene(true);
+  const m = land.hierarchy ? land.hierarchy() : bakeObject(terrain, 'Landscape');
+  if (!m) return null;
   const sz = new THREE.Box3().setFromObject(m).getSize(new THREE.Vector3());
   const others = sceneObjects(); let width = 4; if (others.length) { const b = new THREE.Box3(); others.forEach((o) => b.expandByObject(o)); width = Math.max(b.getSize(new THREE.Vector3()).x, 1) * 1.5; }
-  m.scale.setScalar(opts.scale ?? width / Math.max(sz.x, 1e-6));
-  sceneIO.addObject(root, m, { id: 'landscape', label: 'Landscape', source: 'landscape' });
+  m.scale.setScalar(opts.scale ?? width / Math.max(sz.x, sz.z, 1e-6));
+  addUndoable(root, m, { id: 'landscape', label: 'Landscape', source: 'landscape' }, 'Send landscape');
   if (!scene.children.includes(root)) scene.add(root);
   applyShading(); setShading('color'); frameModel(); updateInfo(); $('drop').classList.add('hidden');
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
+  $('progMsg').textContent = 'Landscape added as a group (terrain, water, buildings by type, trees). Ctrl+Z removes only that group.';
   return { id: m.userData.sceneId, label: m.name };
 }
 Object.assign(window.MeshForge, {
@@ -516,9 +711,9 @@ function addPrimitive(kind) {
   const geo = kind === 'sky' ? new THREE.SphereGeometry(20, 48, 24) : new THREE.PlaneGeometry(6, 6, 48, 48).rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: kind === 'sky' ? 0x9fd4ff : 0x1f9be8, side: THREE.DoubleSide }));
   mesh.name = kind === 'sky' ? 'Sky dome' : 'Water'; mesh.userData.mf = { slots: [kind], active: 0, albedo: 'material', vcol: false };
-  if (model?.userData.isScene) sceneIO.addObject(model, mesh, { id: kind, label: mesh.name, source: 'primitive' });
-  else if (model) { const inv = model.matrixWorld.clone().invert(); mesh.applyMatrix4(inv); model.add(mesh); }
-  else { const root = sceneIO.ensureRoot(false); sceneIO.addObject(root, mesh, { id: kind, label: mesh.name, source: 'primitive' }); if (!scene.children.includes(root)) scene.add(root); $('drop').classList.add('hidden'); }
+  const root = ensureScene(true);
+  addUndoable(root, mesh, { id: kind, label: mesh.name, source: 'primitive' }, 'Add ' + mesh.name);
+  $('drop').classList.add('hidden');
   document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
   applyShading(); updateInfo(); editor.select(mesh); return mesh;
 }
@@ -526,7 +721,7 @@ Object.assign(ACTIONS, { addsky: () => addPrimitive('sky'), addwater: () => addP
 document.querySelectorAll('.menu [data-act]').forEach((b) => b.onclick = () => { document.activeElement?.blur(); ACTIONS[b.dataset.act]?.(); });
 // scene.json: persist the material library and per-object slots; honour room.camera
 const _exportScene = window.MeshForge.exportScene;
-function withMaterials(m) { m.generator = 'MeshForge 7.2'; m.materials = mats.libJSON(); m.chibili = { ...CHIBILI };
+function withMaterials(m) { m.generator = 'MeshForge 8.0'; m.materials = mats.libJSON(); m.chibili = { ...CHIBILI };
   m.objects.forEach((o) => { const x = sceneObjects().find((y) => y.userData.sceneId === o.id); if (x?.userData.mf) { o.materials = x.userData.mf.slots.slice(); if (x.userData.mf.tex) o.texture = { ...x.userData.mf.tex }; } }); return m; }
 window.MeshForge.exportScene = () => withMaterials(_exportScene());
 const _bundle = exportBundle;
@@ -541,7 +736,7 @@ window.__mfAfterSceneLoad = (man) => {
   applyShading();
 };
 Object.assign(window.MeshForge, {
-  version: '7.2', setCamera, getCamera: () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: persp.fov }),
+  version: '8.0', setCamera, getCamera: () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: persp.fov }),
   setShading: (v) => setShading(v), setWorkspace, chibili: CHIBILI,
   materials: {
     list: () => mats.libJSON(), get: (id) => mats.byId(id), create: (d) => mats.create(d).id, duplicate: (id) => mats.duplicate(id)?.id, rename: (id, n) => mats.rename(id, n), remove: (id) => mats.remove(id), update: (id, p) => mats.update(id, p), setActive: (id) => mats.setActive(id),
@@ -628,3 +823,43 @@ import('./meshops.js').then((ops) => {
   };
   Object.assign(window.MeshForge,mfOps);window.MeshForge.meshOps=ops;
 }).catch(e=>console.error('Mesh operations failed:',e));
+
+// ---------- v8 autosave, project files, content browser ----------
+async function buildProjectBlob() {
+  const bundle = await window.MeshForge.exportSceneBundle();
+  const files = [
+    { name: 'scene.json', data: new TextEncoder().encode(JSON.stringify(bundle.manifest, null, 2)) },
+    { name: 'scene.glb', data: new Uint8Array(await bundle.glb.arrayBuffer()) },
+    { name: 'materials.json', data: new TextEncoder().encode(JSON.stringify(bundle.manifest.materials || [])) },
+  ];
+  return new Blob([makeZip(files)], { type: 'application/zip' });
+}
+async function openProjectBytes(buf) {
+  const files = readStoredZip(buf);
+  if (!files['scene.glb']) throw new Error('Project has no scene.glb');
+  const url = URL.createObjectURL(new Blob([files['scene.glb']], { type: 'model/gltf-binary' }));
+  await new Promise((res, rej) => loadGLB(url, res, rej, { label: 'Open project', source: 'project', name: 'Project' }));
+  URL.revokeObjectURL(url);
+  if (files['scene.json']) {
+    try { window.__mfAfterSceneLoad?.(JSON.parse(new TextDecoder().decode(files['scene.json']))); } catch { /* manifest is optional for the mesh */ }
+  }
+}
+recover = createRecover({
+  buildProject: buildProjectBlob,
+  openProject: openProjectBytes,
+  status: (m) => { $('progMsg').textContent = m; },
+  setCamera,
+});
+Object.assign(window.MeshForge, {
+  undo: () => editor.undo(), redo: () => editor.redo(),
+  autosaveNow: (reason) => recover.write(reason || 'manual'),
+  groupSelection: () => doGroup(selectionMeshes()),
+  joinSelection: () => doJoin(selectionMeshes()),
+  selectSimilar: () => doSimilar(editor.sel),
+  hideSelection: hideSelected, unhideAll,
+});
+const dock = document.createElement('div'); dock.id = 'contentDock'; vp.appendChild(dock); mountBrowser(dock);
+Object.assign(ACTIONS, {
+  saveproj: () => recover.save(), saveas: () => recover.saveAs(), autosave: () => recover.chooseFolder(),
+  openproj: () => { const input = document.createElement('input'); input.type = 'file'; input.accept = '.mfproj,.glb,.gltf,.obj,.json'; input.onchange = async () => { const f = input.files[0]; if (!f) return; if (/\.mfproj$/i.test(f.name)) await openProjectBytes(await f.arrayBuffer()); else $('sceneFile').onchange({ target: { files: [f], value: '' } }); }; input.click(); },
+});

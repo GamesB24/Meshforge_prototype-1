@@ -1,2 +1,2 @@
 """MeshForge prototype: image -> 3D with pluggable engines and runners."""
-__version__ = "6.0"
+__version__ = "8.0"

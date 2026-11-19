@@ -6,6 +6,7 @@ import { OBJExporter } from 'three/addons/OBJExporter.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
 import { PLYExporter } from 'three/addons/PLYExporter.js';
 import { MAP, CLASSES, DEFAULTS, createBuilder, randomPaint, randomRegions } from './landscape.js';
+import { mountBrowser, readDropId, assetById, normalizeParts } from './content.js';
 
 export function initLandscape(ctx) {
   const { scene, controls } = ctx;
@@ -44,7 +45,12 @@ export function initLandscape(ctx) {
   <details open><summary>Terrain</summary><div id="lTerrain"></div></details>
   <details open><summary>Water</summary><div id="lWater"></div></details>
   <details open><summary>Buildings</summary><div id="lBuild"></div>
-    <div class="row"><button class="btn" id="lGlb">Load house module (.glb)…</button><button class="btn" id="lGlbReset">Default</button></div><input type="file" id="lGlbFile" accept=".glb,.gltf" hidden></details>
+    <div id="lTypes"></div>
+    <div class="row"><button class="btn" id="lGlb">Load mesh into selected type…</button><button class="btn" id="lGlbReset">Defaults</button></div><input type="file" id="lGlbFile" accept=".glb,.gltf,.obj" hidden>
+    <div class="hint0">Drop a content-browser asset on a type to replace that mesh. Count caps how many are placed. Density is the chance per cell.</div></details>
+  <details open><summary>Trees</summary><div id="lTrees"></div>
+    <div class="mesh-slot" data-slot="tree">Drop a tree mesh here</div></details>
+  <details open><summary>Content</summary><div id="lContent"></div></details>
   <details open><summary>Randomize</summary>
     <div class="row"><span>Seed</span><input id="lSeed" class="txt" type="number" value="1"><button class="btn" id="lDice" title="New random seed">🎲</button></div>
     <label class="row chk"><input id="lRandReg" type="checkbox" checked> Add random cliffs / hills</label>
@@ -100,6 +106,56 @@ export function initLandscape(ctx) {
   slider('lBuild', 'Scale min', 'scatter.scaleMin', 0.3, 2, 0.05);
   slider('lBuild', 'Scale max', 'scatter.scaleMax', 0.3, 3, 0.05);
   check('lBuild', 'On grass', 'scatter.onGrass'); check('lBuild', 'On sand', 'scatter.onSand'); check('lBuild', 'Random rotation', 'scatter.rotate');
+  let slotType = 'house';
+  function renderTypes() {
+    const host = $('lTypes'); if (!host) return;
+    const types = state.params.scatter.types || [];
+    host.innerHTML = types.map((t, i) => `<div class="type-card ${t.id === slotType ? 'on' : ''}" data-i="${i}">
+      <div class="row"><b class="type-name">${t.label || t.id}</b><label class="chk"><input type="checkbox" data-k="enabled" ${t.enabled === false ? '' : 'checked'}> On</label></div>
+      <div class="row"><span>Count</span><input data-k="count" type="number" min="0" max="500" value="${t.count || 0}"><b></b></div>
+      <div class="row"><span>Density</span><input data-k="density" type="range" min="0" max="1" step="0.05" value="${t.density ?? 0.3}"><b>${(t.density ?? 0).toFixed(2)}</b></div>
+      <div class="mesh-slot" data-slot="${t.id}">Drop ${t.label || t.id} mesh</div>
+    </div>`).join('');
+    host.querySelectorAll('.type-card').forEach((card) => {
+      card.onclick = (e) => { if (e.target.closest('.mesh-slot') || e.target.tagName === 'INPUT') return; slotType = types[+card.dataset.i].id; renderTypes(); };
+      card.querySelectorAll('input').forEach((inp) => {
+        const apply = () => {
+          const t = types[+card.dataset.i];
+          t[inp.dataset.k] = inp.type === 'checkbox' ? inp.checked : +inp.value;
+          const b = inp.parentElement.querySelector('b'); if (b && inp.dataset.k === 'density') b.textContent = (+inp.value).toFixed(2);
+          schedule(40);
+        };
+        inp.oninput = apply; inp.onchange = apply;
+      });
+    });
+    host.querySelectorAll('.mesh-slot').forEach((slot) => bindSlot(slot, slot.dataset.slot));
+  }
+  function bindSlot(slot, type) {
+    slot.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); slot.classList.add('over'); });
+    slot.addEventListener('dragleave', () => slot.classList.remove('over'));
+    slot.addEventListener('drop', (e) => {
+      e.preventDefault(); e.stopPropagation(); slot.classList.remove('over');
+      const id = readDropId(e.dataTransfer);
+      const asset = assetById(id);
+      if (!asset) { status('Drop an asset from the content browser'); return; }
+      builder.setTypeMesh(type, normalizeParts(asset.parts, type === 'tree' ? 1.2 : 0.9));
+      rebuild(); status(`Using ${asset.name} for ${type}`);
+    });
+  }
+  function renderTrees() {
+    const host = $('lTrees'); const T = state.params.trees; if (!host || !T) return;
+    const rows = [['count', 'Count', 0, 400, 1], ['density', 'Density', 0, 1, 0.05], ['scaleMin', 'Scale min', 0.2, 3, 0.05], ['scaleMax', 'Scale max', 0.2, 4, 0.05], ['rotJitter', 'Rotation', 0, 1, 0.05], ['area', 'Area', 0.2, 1, 0.05]];
+    host.innerHTML = `<label class="row chk"><input id="lTreeOn" type="checkbox" ${T.on ? 'checked' : ''}> Scatter trees</label>` + rows.map(([k, label, min, max, step]) => `<div class="row"><span>${label}</span><input data-k="${k}" type="range" min="${min}" max="${max}" step="${step}" value="${T[k]}"><b>${Number(T[k]).toFixed(step < 1 ? 2 : 0)}</b></div>`).join('');
+    host.querySelector('#lTreeOn').onchange = (e) => { T.on = e.target.checked; schedule(30); };
+    host.querySelectorAll('input[data-k]').forEach((inp) => inp.oninput = () => {
+      T[inp.dataset.k] = +inp.value;
+      const b = inp.parentElement.querySelector('b'); if (b) b.textContent = (+inp.value).toFixed(+inp.step < 1 ? 2 : 0);
+      schedule(40);
+    });
+  }
+  renderTypes(); renderTrees();
+  const treeSlot = panel.querySelector('[data-slot="tree"]'); if (treeSlot) bindSlot(treeSlot, 'tree');
+  mountBrowser($('lContent'));
   const syncAll = () => { binders.forEach((f) => f()); $('lSeed').value = state.params.seed; $('lClearH').disabled = !state.hmap; renderRegions(); drawPaint(); };
 
   // ---------- rebuild (debounced) ----------
@@ -230,18 +286,16 @@ export function initLandscape(ctx) {
 
   // ---------- custom building module ----------
   $('lGlb').onclick = () => $('lGlbFile').click();
-  $('lGlbReset').onclick = () => { builder.setModules({}); rebuild(); };
-  $('lGlbFile').onchange = (e) => {
-    const f = e.target.files[0]; if (!f) return; const url = URL.createObjectURL(f);
-    new GLTFLoader().load(url, (g) => {
-      g.scene.updateMatrixWorld(true); const geos = [];
-      g.scene.traverse((o) => { if (o.isMesh) { let geo = o.geometry.clone().applyMatrix4(o.matrixWorld); geo = geo.index ? geo.toNonIndexed() : geo; for (const k of Object.keys(geo.attributes)) if (k !== 'position' && k !== 'normal') geo.deleteAttribute(k); if (!geo.attributes.normal) geo.computeVertexNormals(); geos.push(geo); } });
-      const box = new THREE.Box3(); geos.forEach((x) => { x.computeBoundingBox(); box.union(x.boundingBox); });
-      const sz = box.getSize(new THREE.Vector3()), s = 0.9 / Math.max(sz.x, sz.z, 1e-6), c = box.getCenter(new THREE.Vector3());
-      geos.forEach((x) => x.translate(-c.x, -box.min.y, -c.z).scale(s, s, s));
-      builder.setModules({ house: geos }); rebuild(); URL.revokeObjectURL(url); status(`Using ${f.name} as the house module (${geos.length} mesh part(s))`);
-    }, undefined, (err) => status('Could not load module: ' + err.message));
-    e.target.value = '';
+  $('lGlbReset').onclick = () => { builder.setModules({}); rebuild(); status('Building and tree meshes reset'); };
+  $('lGlbFile').onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const { importFile, normalizeParts: norm } = await import('./content.js');
+      const asset = await importFile(f);
+      const type = slotType || 'house';
+      builder.setTypeMesh(type, norm(asset.parts, type === 'tree' ? 1.2 : 0.9));
+      rebuild(); status(`Using ${f.name} for ${type}. Materials and UVs are kept.`);
+    } catch (err) { status('Could not load module: ' + err.message); }
   };
 
   // ---------- randomize ----------
@@ -320,7 +374,7 @@ export function initLandscape(ctx) {
     sampleHeight: (x, z) => result?.sampleHeight(x, z) ?? 0,
     addRegion: (r) => { const reg = addRegion({ type: r.type || 'poly', pts: r.pts }); Object.assign(reg, r); renderRegions(); rebuild(); return reg; },
     paintCircle: (u, v, size, c) => { const s = UI.size; UI.size = size; dab(u, v, c); UI.size = s; drawPaint(); schedule(10); },
-    loadProject, projectJSON, encode, exportAs, get group() { return builder.group; }, heightPNG, paintCanvas, setTool, setColour,
+    loadProject, projectJSON, encode, exportAs, get group() { return builder.group; }, hierarchy: () => builder.hierarchy(), heightPNG, paintCanvas, setTool, setColour,
   };
   return api;
 }

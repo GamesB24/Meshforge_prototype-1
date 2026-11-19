@@ -8,50 +8,51 @@ import { GLTFLoader } from 'three/addons/GLTFLoader.js';
 const D2R = Math.PI / 180;
 const isOverlay = (o) => o.userData?.isOverlay;
 
-// Merge every mesh under `root` into one geometry expressed in root's local space.
+function cloneMat(src) {
+  if (!src) return new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, side: THREE.DoubleSide });
+  if (Array.isArray(src)) return src.map((m) => cloneMat(m));
+  const m = src.clone();
+  m.side = THREE.DoubleSide;
+  if (src.map) m.map = src.map;
+  if (src.normalMap) m.normalMap = src.normalMap;
+  m.userData = { ...(src.userData || {}) };
+  // Keep a real texture. Vertex colours stay only when the file actually has them and no albedo map.
+  if (m.map) m.vertexColors = false;
+  return m;
+}
+
+// Bring a loaded node into the scene without baking textures into vertex colours.
+// One mesh stays one mesh. Several meshes become a group, each child keeping its
+// material, UVs and maps. `bakeObject` is the old name and still returns that result.
 export function bakeObject(root, name) {
   root.updateMatrixWorld(true);
   const inv = root.matrixWorld.clone().invert();
   const parts = []; root.traverse((o) => { if (o.isMesh && !isOverlay(o) && o.geometry?.attributes?.position) parts.push(o); });
   if (!parts.length) return null;
   const rel = (m) => new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld);
-  let geo, mat, partInfo = [], hadVC = false;
-  if (parts.length === 1 && !Array.isArray(parts[0].material)) {           // keep UVs / textures / vertex colours as they are
-    const p = parts[0]; geo = p.geometry.clone(); geo.applyMatrix4(rel(p));
-    mat = p.material.clone(); mat.userData = p.material.userData; if (p.material.map) mat.map = p.material.map;
-    partInfo = [{ material: p.material, triStart: 0, triCount: (geo.index ? geo.index.count : geo.attributes.position.count) / 3 }]; hadVC = true;
-  } else {
-    const P = [], N = [], C = [], UV = []; const col = new THREE.Color(); const allUV = parts.every((p) => p.geometry.attributes.uv);
-    for (const p of parts) {
-      let g = p.geometry.clone(); if (g.index) g = g.toNonIndexed(); g.applyMatrix4(rel(p));
-      if (!g.attributes.normal) g.computeVertexNormals();
-      const pos = g.attributes.position, nor = g.attributes.normal, vc = g.attributes.color;
-      const m = Array.isArray(p.material) ? p.material[0] : p.material; const mc = m?.color || new THREE.Color(1, 1, 1);
-      partInfo.push({ material: m, triStart: P.length / 9, triCount: pos.count / 3 }); if (vc) hadVC = true;
-      if (allUV) { const ua = g.attributes.uv; for (let i = 0; i < pos.count; i++) UV.push(ua.getX(i), ua.getY(i)); }
-      for (let i = 0; i < pos.count; i++) {
-        P.push(pos.getX(i), pos.getY(i), pos.getZ(i)); N.push(nor.getX(i), nor.getY(i), nor.getZ(i));
-        if (vc) col.setRGB(vc.getX(i), vc.getY(i), vc.getZ(i)); else col.setRGB(1, 1, 1);
-        C.push(col.r * mc.r, col.g * mc.g, col.b * mc.b);
-      }
+  const make = (p) => {
+    const geo = p.geometry.clone(); geo.applyMatrix4(rel(p));
+    if (!geo.attributes.normal) geo.computeVertexNormals();
+    const mat = cloneMat(p.material);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = p.name || 'mesh';
+    const ca = geo.attributes.color;
+    if (ca && !mat.map) {
+      const a = new THREE.Color(0, 0, 0);
+      for (let i = 0; i < ca.count; i++) { a.r += ca.getX(i); a.g += ca.getY(i); a.b += ca.getZ(i); }
+      a.multiplyScalar(1 / Math.max(ca.count, 1));
+      const tint = Array.isArray(mat) ? mat[0]?.color : mat.color;
+      mesh.userData.avgColor = a.multiply(tint || new THREE.Color(1, 1, 1)).getHex();
     }
-    geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(C, 3)); if (allUV) geo.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
-    mat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.6, metalness: 0 });
-  }
-  if (!geo.attributes.normal) geo.computeVertexNormals();
-  geo.computeBoundingBox(); geo.computeBoundingSphere();
-  mat.side = THREE.DoubleSide; mat.vertexColors = !!geo.attributes.color;
-  const mesh = new THREE.Mesh(geo, mat); mesh.name = name || root.name || 'object';
-  // v7: MeshForge-written materials (GLB extras) come back as material slots / an engine texture
-  const mats = window.__meshforge?.mats;
-  if (mats && partInfo.length && partInfo.some((p) => p.material?.userData?.chibili || p.material?.userData?.mfTexture) && mats.adopt(mesh, partInfo)) {
-    if (partInfo.length > 1 && !hadVC) { geo.deleteAttribute('color'); mat.vertexColors = false; }
-  }
-  const ca = geo.attributes.color;   // remember the average colour: Sculpt Mode welds the mesh and drops vertex colours
-  if (ca) { const a = new THREE.Color(0, 0, 0); for (let i = 0; i < ca.count; i++) { a.r += ca.getX(i); a.g += ca.getY(i); a.b += ca.getZ(i); } a.multiplyScalar(1 / Math.max(ca.count, 1)); mesh.userData.avgColor = a.multiply(mat.color || new THREE.Color(1, 1, 1)).getHex(); }
-  return mesh;
+    const mats = window.__meshforge?.mats;
+    const triCount = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+    if (mats && (p.material?.userData?.chibili || p.material?.userData?.mfTexture)) mats.adopt(mesh, [{ material: p.material, triStart: 0, triCount }]);
+    return mesh;
+  };
+  if (parts.length === 1) { const mesh = make(parts[0]); mesh.name = name || parts[0].name || 'object'; return mesh; }
+  const group = new THREE.Group(); group.name = name || root.name || 'object';
+  for (const p of parts) group.add(make(p));
+  return group;
 }
 
 function applyTransform(obj, o) {
@@ -82,6 +83,7 @@ export function createSceneIO(ctx) {
   const resolve = (ref) => { try { return baseURL ? new URL(ref, baseURL).href : ref; } catch { return ref; } };
 
   function ensureRoot(append) {
+    if (ctx.ensureScene) return ctx.ensureScene(!!append);
     let root = ctx.getRoot();
     if (!append || !root?.userData.isScene) {
       root = new THREE.Group(); root.name = 'Scene'; root.userData.isScene = true; root.userData.norm = new THREE.Matrix4();
@@ -100,7 +102,7 @@ export function createSceneIO(ctx) {
     if (info.visible === false) mesh.visible = false;
     root.add(mesh); return mesh;
   }
-  const objects = () => (ctx.getRoot()?.userData.isScene ? ctx.getRoot().children.filter((o) => o.isMesh && o.userData.sceneId) : []);
+  const objects = () => (ctx.getRoot()?.userData.isScene ? ctx.getRoot().children.filter((o) => (o.isMesh || o.isGroup) && o.userData.sceneId && !o.userData.isOverlay) : []);
 
   // Accept: manifest object, URL string (.json or .glb/.gltf), File/Blob, ArrayBuffer, FileList/array of Files.
   async function loadScene(src, opts = {}) {
@@ -121,7 +123,7 @@ export function createSceneIO(ctx) {
         if (opts.baseURL) baseURL = new URL(opts.baseURL, location.href).href;
       } else if (src && typeof src === 'object') { kind = 'json'; data = src; if (opts.baseURL) baseURL = new URL(opts.baseURL, location.href).href; }
       else throw new Error('loadScene expects a URL, File, Blob, ArrayBuffer or manifest object');
-      ctx.editor.reset();
+      if (ctx.editor.leaveModes) ctx.editor.leaveModes(); else ctx.editor.reset();
       const root = ensureRoot(!!opts.append);
       if (kind === 'glb') {
         manifest = { version: 1, objects: [] };
@@ -141,7 +143,16 @@ export function createSceneIO(ctx) {
         const results = await Promise.allSettled(list.map(async (o, i) => {
           const ref = o.glb ?? o.mesh ?? o.url ?? o.file;
           if (!ref) throw new Error('no glb/mesh path');
-          if (/\.obj(\?|$)/i.test(ref)) throw new Error('OBJ meshes are not supported in scenes yet; use GLB');
+          if (/\.obj(\?|$)/i.test(ref)) {
+            const { meshesFromOBJ } = await import('./objmtl.js');
+            const text = new TextDecoder().decode(await fetchBuf(ref));
+            let mtl = '';
+            const mtllib = text.match(/^\s*mtllib\s+(\S+)/m);
+            if (mtllib) { try { mtl = new TextDecoder().decode(await fetchBuf(mtllib[1])); } catch { /* missing mtl */ } }
+            const built = await meshesFromOBJ(text, mtl, (file) => fetchBuf(file));
+            const g = new THREE.Group(); built.forEach((m) => g.add(m));
+            return g;
+          }
           const g = await parseGLB(await fetchBuf(ref), resolve(ref));
           const m = bakeObject(g.scene, o.label || o.id || `Object ${i + 1}`); if (!m) throw new Error('GLB has no mesh');
           return m;
@@ -169,7 +180,7 @@ export function createSceneIO(ctx) {
   function exportScene() {
     const base = manifest ? JSON.parse(JSON.stringify(manifest)) : { version: 1 };
     const src = new Map((manifest?.objects || []).map((o) => [String(o.id), o]));
-    base.version = 1; base.up = base.up || 'Y'; base.units = base.units || 'm'; base.generator = 'MeshForge 7.0';
+    base.version = 1; base.up = base.up || 'Y'; base.units = base.units || 'm'; base.generator = 'MeshForge 8.0';
     base.objects = objects().map((m) => {
       const o = { ...(src.get(m.userData.sceneId) || {}) };
       delete o.rotationDeg; delete o.quaternion; delete o.mesh;

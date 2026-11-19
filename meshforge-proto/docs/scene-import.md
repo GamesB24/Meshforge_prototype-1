@@ -40,7 +40,7 @@ Axes: x right, y up, z toward the camera. Units are whatever you use (the defaul
 | `photo` | no | The original photo, relative to scene.json. The 📷 button in the Scene panel shows it as an overlay. |
 | anything else | no | Kept as-is in `exportScene()` output (e.g. `rel_depth`, `bbox_px`, `room`). |
 
-Each object's GLB is loaded as **one** object. If the GLB has several parts, they are merged, and each part's material colour is baked into vertex colours. A GLB with a single mesh keeps its own material, UVs and texture. Objects whose mesh fails to load are skipped and reported in `errors`. The rest of the scene still loads.
+Each object's GLB is loaded with its UVs, textures and materials. A single mesh stays one object. Several meshes become a group, and each child keeps its own material. Objects whose mesh fails to load are skipped and reported in `errors`. The rest of the scene still loads. OBJ+MTL is accepted and keeps `map_Kd` when the image file is next to the OBJ.
 
 **A single scene GLB also works:** every top-level node becomes its own object, keeping its name and transform. If there is a single wrapper node, its children are used. GLBs exported by MeshForge keep `id`, `label` and `source` in node extras, so they round-trip.
 

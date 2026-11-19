@@ -62,7 +62,9 @@ const headers = {...mf.secrets.header('Gemini'), 'Content-Type':'application/jso
 mf.secrets.clear();
 ```
 
-Names may contain letters, digits, `_` and `-`. Secrets live in a per-plugin JavaScript closure, not localStorage/sessionStorage, host-created DOM, host logs, or disk. The example uses a transient password input and clears it immediately. `pagehide`, `unload` and `deactivate` clear the closure. The host never automatically sends a secret; the plugin must deliberately attach `secrets.header()` to its own requests.
+Names may contain letters, digits, `_` and `-`. Secrets live in a per-plugin JavaScript closure, not localStorage/sessionStorage, host logs, or disk. `secrets.set` does not call the server, so a key entry cannot fail because a later request is offline. If the plugin list itself failed to load, there is no key field until you reload with the server running. `pagehide` clears the key only when the page is actually going away (`event.persisted` is false), so the back button does not wipe a key that is still on screen. `unload` and `deactivate` clear it too. The host never automatically sends a secret; the plugin must deliberately attach `secrets.header()` to its own requests.
+
+After `secrets.set`, MeshForge shows a status such as "key held for this session, not verified". If the plugin has not attached the key to a request, the status says the plugin has not used the key yet. Scene From Photo (not shipped in this repo) stores a Google key and does not call a model provider, so entering the key does not sign you in and does not change the scene. There is no account login.
 
 MeshForge configures uvicorn access-log filters to redact `X-Plugin-Secret-*` values if headers are included in a custom format; its default request-line-only format never contains them. Plugin Python code receives normal request headers and can forward the key to its provider, but must not log or persist it. Only install trusted plugins: there is no sandbox around what an installed plugin does.
 

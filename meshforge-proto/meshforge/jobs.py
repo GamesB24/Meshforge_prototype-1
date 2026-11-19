@@ -65,7 +65,8 @@ def run_pipeline(img: Image.Image, out_dir, engine: str, runner: str, remove_bg:
     """The one generation path shared by the server job worker and meshforge.api (so results match the UI).
     Writes processed.png, raw.glb, mesh.glb, mesh.obj into out_dir and returns export stats."""
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
-    proc = preprocess(img, remove_bg, float(params.get("fg_ratio", 0.85)), recenter_alpha=recenter_alpha)
+    proc = preprocess(img, remove_bg, float(params.get("fg_ratio", 0.85)), recenter_alpha=recenter_alpha,
+                      input_size=params.get("input_size", 1024))
     proc.save(out / "processed.png")
     parts = RUNNERS[runner].run(engine, proc, params, progress)
     raw_ok = _save_raw(parts, out / "raw.glb")  # unprocessed engine output, for comparison

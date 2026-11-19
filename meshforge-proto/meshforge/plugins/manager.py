@@ -16,6 +16,24 @@ from fastapi import APIRouter, HTTPException
 from . import jobs
 
 _ID = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$")
+HOST_VERSION = "8.0"
+
+
+def _version_tuple(text: str):
+    parts = []
+    for bit in str(text).split("."):
+        n = ""
+        for ch in bit:
+            if ch.isdigit():
+                n += ch
+            else:
+                break
+        parts.append(int(n) if n else 0)
+    return tuple(parts or (0,))
+
+
+def _version_newer(need: str, host: str = HOST_VERSION) -> bool:
+    return _version_tuple(need) > _version_tuple(host)
 
 
 class SecretHeaderFilter(logging.Filter):
@@ -23,12 +41,23 @@ class SecretHeaderFilter(logging.Filter):
     def filter(self, record):
         try:
             text = record.getMessage()
-            clean = re.sub(r"(?i)(X-Plugin-Secret-[A-Za-z0-9_-]+\s*[:=]\s*)[^\s,;&]+", r"\1[REDACTED]", text)
+            clean = scrub_text(text)
             if clean != text:
                 record.msg, record.args = clean, ()
         except Exception:
             pass
         return True
+
+
+_SECRET_TEXT = re.compile(
+    r"(?i)(x-plugin-secret-[a-z0-9_-]+\s*[:=]\s*)\S+|(bearer\s+)\S+|(api[_-]?key\s*[:=]\s*)\S+"
+)
+
+
+def scrub_text(text: str) -> str:
+    def repl(m):
+        return (m.group(1) or m.group(2) or m.group(3) or "") + "[REDACTED]"
+    return _SECRET_TEXT.sub(repl, str(text))
 
 
 def install_log_filter():
@@ -53,8 +82,18 @@ class PluginManager:
             return {"enabled": {}, "errors": {}}
 
     def _write_state(self, state):
+        # Only enabled flags and error strings. Tokens, keys and logins are dropped.
+        enabled = {}
+        for k, v in (state.get("enabled") or {}).items():
+            if isinstance(k, str) and _ID.fullmatch(k):
+                enabled[k] = bool(v)
+        errors = {}
+        for k, v in (state.get("errors") or {}).items():
+            if isinstance(k, str):
+                errors[k] = scrub_text(v)[:500]
+        clean = {"enabled": enabled, "errors": errors}
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2), "utf8")
+        tmp.write_text(json.dumps(clean, indent=2), "utf8")
         os.replace(tmp, self.state_path)
 
     def manifests(self):
@@ -131,7 +170,7 @@ class PluginManager:
             source_manifest = dict(manifest)
             manifest = {k: v for k, v in manifest.items() if not k.startswith("_")}
             entry = {"id": pid, "manifest": manifest, "enabled": enabled, "error": state["errors"].get(pid)}
-            if enabled and manifest.get("minMeshForge") and str(manifest["minMeshForge"]) > "7.2":
+            if enabled and manifest.get("minMeshForge") and _version_newer(str(manifest["minMeshForge"]), "8.0"):
                 entry.update(enabled=False, error="Requires a newer MeshForge")
             if enabled and app is not None and manifest.get("backend") and pid not in self.mounted:
                 self.mount_backend(app, pid, source_manifest, entry)

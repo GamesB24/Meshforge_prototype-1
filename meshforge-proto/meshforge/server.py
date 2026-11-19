@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi import Request, Body
 
 from .plugins.manager import PluginManager, install_log_filter
+from . import autosave as autosave_mod
 
 from .engines import list_engines, TRIPOSR_DIR_ON_PATH  # noqa: F401  (puts TripoSR on sys.path)
 from .jobs import JobQueue
@@ -54,6 +55,75 @@ for plugin in plugin_manager.scan(app):
     directory = PLUGINS / plugin["id"]
     if directory.is_dir():
         app.mount(f"/plugins/{plugin['id']}", StaticFiles(directory=str(directory)), name=f"plugin-{plugin['id']}")
+
+
+@app.get("/api/autosave/settings")
+def autosave_settings():
+    return autosave_mod.status()
+
+
+@app.post("/api/autosave/settings")
+def autosave_settings_save(body: dict = Body(...)):
+    if "dir" in body and body.get("dir"):
+        info = autosave_mod.check_dir(body["dir"])
+        if not info["ok"]:
+            raise HTTPException(400, info["reason"] or "Folder is not writable")
+        body = {**body, "dir": info["path"]}
+    saved = autosave_mod.save_settings(body)
+    return {"ok": True, "settings": saved, "status": autosave_mod.status()}
+
+
+@app.post("/api/autosave/check")
+def autosave_check(body: dict = Body(...)):
+    return autosave_mod.check_dir(body.get("path") or body.get("dir") or "")
+
+
+@app.post("/api/autosave/choose")
+def autosave_choose():
+    return autosave_mod.try_native_folder()
+
+
+@app.post("/api/autosave")
+async def autosave_write(request: Request):
+    # Headers are ignored on purpose. A plugin secret must not land in the file or the manifest.
+    data = await request.body()
+    if len(data) > 80 * 1024 * 1024:
+        raise HTTPException(413, "Autosave is too large")
+    reason = request.query_params.get("reason") or "interval"
+    folder = autosave_mod.active_dir()
+    meta = autosave_mod.rotate_write(folder, data, reason)
+    meta["dir"] = str(folder)
+    return {"ok": True, **meta}
+
+
+@app.get("/api/autosave/file/{name}")
+def autosave_file(name: str):
+    try:
+        path = autosave_mod.read_copy(name)
+    except FileNotFoundError:
+        raise HTTPException(404, "No such autosave")
+    return FileResponse(path, filename=name, media_type="application/zip")
+
+
+@app.post("/api/projects/save")
+async def project_save(request: Request):
+    """Write a .mfproj the user named. The folder must already be writable."""
+    raw = request.query_params.get("path") or ""
+    if not raw.lower().endswith(".mfproj"):
+        raise HTTPException(400, "Project path must end with .mfproj")
+    dest = Path(raw).expanduser()
+    info = autosave_mod.check_dir(str(dest.parent))
+    if not info["ok"]:
+        raise HTTPException(400, info["reason"] or "Folder is not writable")
+    data = await request.body()
+    if len(data) > 80 * 1024 * 1024:
+        raise HTTPException(413, "Project is too large")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".mfproj.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
+    autosave_mod.save_settings({"projectPath": str(dest), "lastManualSave": __import__("time").time()})
+    return {"ok": True, "path": str(dest)}
 
 
 @app.get("/api/config")

@@ -4,7 +4,7 @@ export async function activate(mf) {
     onEnter:()=>{}, onLeave:()=>{}});
   panel.innerHTML = '<details open><summary>Plugin example</summary><button id="exJob" class="primary">Run backend job</button><div id="exProgress" class="hint0"></div><button id="exScene" class="btn">Count scene objects</button><div id="exSceneOut" class="hint0"></div><label class="hint0">Session API key (not stored)</label><input id="exSecret" type="password" autocomplete="new-password"><button id="exSecretSet" class="btn">Set for this session</button><div id="exSecretStatus" class="hint0"></div></details>';
   const q = id => panel.querySelector(id);
-  q('#exSecretSet').onclick = () => { mf.secrets.set('Gemini', q('#exSecret').value); q('#exSecret').value=''; q('#exSecretStatus').textContent='Held in memory until close; not sent by this example.'; };
+  q('#exSecretSet').onclick = () => { const msg = mf.secrets.set('Gemini', q('#exSecret').value); q('#exSecret').value=''; q('#exSecretStatus').textContent = msg; };
   q('#exJob').onclick = async () => {
     q('#exProgress').textContent='Starting…';
     const r=await mf.backend('work',{method:'POST',headers:{...mf.secrets.header('Gemini')}});

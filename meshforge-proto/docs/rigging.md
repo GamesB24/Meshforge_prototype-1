@@ -21,6 +21,9 @@ Use *File ▸ Import rigged character (GLB / glTF)…*, or drop the .glb on the 
 
 Export (GLB) writes the skeleton, the skin weights, your current materials and the animation clips.
 
+## Pose Mode
+The mode menu includes **Pose Mode**. It only works on a skinned GLB or glTF (an armature plus a mesh, for example a Blender export with Skinning on). A mesh generated from a photo has no skeleton. Choosing Pose Mode on one of those shows a message and stays in Object Mode. MeshForge does not build a skeleton for you.
+
 ## Limits
 - Edit Mode and Sculpt Mode are blocked on skinned meshes, because moving vertices would break the skin.
 - There are no tools to create rigs or paint weights. MeshForge only previews, poses and passes rigs through.

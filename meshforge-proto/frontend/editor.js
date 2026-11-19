@@ -18,7 +18,7 @@ export function createEditor(ctx) {
   const { scene, controls, canvas } = ctx;
   const vp = canvas.parentElement;
   const cam = () => ctx.camera();
-  const S = { tool: 'select', mode: 'object', sel: null, selMode: 'vert', modal: null, mouse: new THREE.Vector2(-1, -1), quadCache: {}, down: null, box: null };
+  const S = { tool: 'select', mode: 'object', sel: null, multi: [], selMode: 'vert', modal: null, mouse: new THREE.Vector2(-1, -1), quadCache: {}, down: null, box: null };
   let E = null;                                   // edit-mode data (see buildEdit)
   const undoStack = [], redoStack = [];
   const rc = new THREE.Raycaster();
@@ -60,10 +60,25 @@ export function createEditor(ctx) {
     fragmentShader: outlineMat.fragmentShader,
   });
   let outline = null;
-  function select(obj) {
+  function selectionList() { return (S.multi || []).filter((o) => o && o.parent); }
+  function select(obj, opts = {}) {
     if (outline) { outline.parent?.remove(outline); outline = null; }
-    S.sel = obj || null;
-    if (obj && S.mode === 'object') {
+    if (opts.toggle && obj) {
+      const i = S.multi.indexOf(obj);
+      if (i >= 0) S.multi.splice(i, 1); else S.multi.push(obj);
+      S.sel = S.multi[S.multi.length - 1] || null;
+    } else if (opts.add && obj) {
+      if (!S.multi.includes(obj)) S.multi.push(obj);
+      S.sel = obj;
+    } else if (opts.many) {
+      S.multi = opts.many.filter(Boolean);
+      S.sel = S.multi[S.multi.length - 1] || null;
+    } else {
+      S.multi = obj ? [obj] : [];
+      S.sel = obj || null;
+    }
+    obj = S.sel;
+    if (obj?.isMesh && S.mode === 'object') {
       if (obj.isSkinnedMesh) { outline = new THREE.SkinnedMesh(obj.geometry, outlineSkinMat); outline.bind(obj.skeleton, obj.bindMatrix); outline.bindMode = obj.bindMode; outline.frustumCulled = false; }
       else outline = new THREE.Mesh(obj.geometry, outlineMat);
       outline.userData.isOverlay = true; outline.raycast = () => {};
@@ -282,8 +297,25 @@ export function createEditor(ctx) {
   }
 
   async function setMode(m) {
+    if (m === 'pose') {
+      const mesh = S.sel || meshes()[0];
+      const rigged = !!(mesh?.isSkinnedMesh || ctx.hasRig?.());
+      if (!rigged) {
+        status('Pose Mode needs a rigged GLB or glTF. Generated meshes have no skeleton. Export an armature and a skinned mesh from Blender (Skinning on) and import that file.');
+        ctx.setModeUI('object');
+        return;
+      }
+      if (S.mode === 'sculpt') ctx.sculptExit?.();
+      destroyEdit();
+      S.mode = 'pose';
+      ctx.setModeUI('pose');
+      ctx.onPose?.(true);
+      status('Pose Mode. Use the Rig panel to rotate bones. Ctrl+Z undoes a pose.');
+      ctx.updateInfo();
+      return;
+    }
     if (m === S.mode || S.modal) { ctx.setModeUI(S.mode); return; }
-    if (S.mode === 'sculpt') { ctx.sculptExit?.(); S.mode = 'object'; }      // v5: leave Sculpt Mode first
+    if (S.mode === 'sculpt' || S.mode === 'pose') { if (S.mode === 'sculpt') ctx.sculptExit?.(); S.mode = 'object'; }      // leave Sculpt or Pose first
     if ((m === 'sculpt' || m === 'edit') && ctx.blockMode?.(S.sel || meshes()[0], m)) { ctx.setModeUI(S.mode); return; }
     if (m === 'sculpt') {
       destroyEdit();
@@ -311,7 +343,21 @@ export function createEditor(ctx) {
   // ---------- picking ----------
   function pickObject(p, extend) {
     const hit = hitTest(p, meshes());
-    select(hit ? hit.object : (extend ? S.sel : null));
+    if (!hit) { if (!extend) select(null); return; }
+    select(hit.object, extend ? { toggle: true } : {});
+  }
+  function boxSelectObjects(a, b, extend) {
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+    const hits = [];
+    for (const m of meshes()) {
+      if (!m.visible) continue;
+      const c = new THREE.Box3().setFromObject(m).getCenter(new THREE.Vector3());
+      const s = toScreen(c);
+      if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) hits.push(m);
+    }
+    if (extend) { const set = new Set(selectionList()); hits.forEach((m) => set.add(m)); select(null, { many: [...set] }); }
+    else select(null, { many: hits });
+    status(hits.length ? `Box selected ${hits.length} object(s)` : 'Box select missed');
   }
   function pickElement(p, extend) {
     const hit = hitTest(p, [E.mesh]);
@@ -451,7 +497,10 @@ export function createEditor(ctx) {
   // ---------- input ----------
   const boxDiv = document.createElement('div'); boxDiv.className = 'boxsel'; boxDiv.hidden = true; vp.appendChild(boxDiv);
   const local = (e) => { const r = rect(); return new THREE.Vector2(e.clientX - r.left, e.clientY - r.top); };
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (S.mode === 'object' && selectionList().length) ctx.onContextMenu?.(e, selectionList());
+  });
   vp.addEventListener('pointerdown', (e) => {
     if (S.modal) { e.preventDefault(); e.stopPropagation(); endModal(e.button === 0); return; }
     if (e.target !== canvas) return;
@@ -461,7 +510,7 @@ export function createEditor(ctx) {
   addEventListener('pointermove', (e) => {
     S.mouse.copy(local(e));
     if (S.modal) { S.modal.snap = e.ctrlKey; updateModal(); return; }
-    if (S.down && !S.down.onGizmo && S.mode === 'edit' && S.tool === 'select' && S.down.p.distanceTo(S.mouse) > 4) {
+    if (S.down && !S.down.onGizmo && S.tool === 'select' && (S.mode === 'edit' || S.mode === 'object') && S.down.p.distanceTo(S.mouse) > 4) {
       S.box = true; const a = S.down.p, b = S.mouse;
       Object.assign(boxDiv.style, { left: Math.min(a.x, b.x) + 'px', top: Math.min(a.y, b.y) + 'px', width: Math.abs(a.x - b.x) + 'px', height: Math.abs(a.y - b.y) + 'px' }); boxDiv.hidden = false;
     }
@@ -470,7 +519,7 @@ export function createEditor(ctx) {
     const d = S.down; S.down = null; boxDiv.hidden = true;
     if (!d || e.button !== 0 || d.onGizmo || tc.dragging) { S.box = false; return; }
     const p = local(e);
-    if (S.box) { S.box = false; boxSelect(d.p, p, e.shiftKey); return; }
+    if (S.box) { S.box = false; if (S.mode === 'object') boxSelectObjects(d.p, p, e.shiftKey); else boxSelect(d.p, p, e.shiftKey); return; }
     if (d.p.distanceTo(p) > 4) return;                  // it was an orbit drag
     if (S.mode === 'edit') pickElement(p, e.shiftKey); else pickObject(p, e.shiftKey);
   });
@@ -558,7 +607,10 @@ export function createEditor(ctx) {
   }
 
   function clearHistory(msg) { undoStack.length = redoStack.length = 0; if (msg) status(msg); }
-  function reset() { endModal(false); if (S.mode === 'sculpt') ctx.sculptExit?.(); destroyEdit(); S.mode = 'object'; ctx.setModeUI('object'); select(null); undoStack.length = redoStack.length = 0; }
+  function leaveModes() { endModal(false); if (S.mode === 'sculpt') ctx.sculptExit?.(); destroyEdit(); if (S.mode !== 'object') { S.mode = 'object'; ctx.setModeUI('object'); } }
+  // v8: reset leaves modes and the selection. It does not throw away the undo stack.
+  // Generating or importing used to call reset(), which is why Ctrl+Z could not bring a level back.
+  function reset() { leaveModes(); select(null); }
   function tick() {
     tc.camera = cam();
     const sz = ctx.renderer.getDrawingBufferSize(new THREE.Vector2()); outlineMat.uniforms.res.value.copy(sz); outlineMat.uniforms.px.value = 1.6 * ctx.renderer.getPixelRatio();
@@ -571,12 +623,39 @@ export function createEditor(ctx) {
   }
   // test hook
   const debug = { get S() { return S; }, get E() { return E; }, undoStack, redoStack, startModal, endModal, updateModal, pickObject, pickElement, boxSelect, encode, toScreen, meshes };
-  return { faceSelection, selectFaces, selectedEdgesW, rebuildEdit, encodeOBJBundle, get selMode() { return S.selMode; }, save, get sel() { return S.sel; }, pushHistory: push, clearHistory, undoStack: () => undoStack, handleKey, setTool, setMode, setSelMode, selectAll, undo, redo, exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; } };
+  return { faceSelection, selectFaces, selectedEdgesW, rebuildEdit, encodeOBJBundle, get selMode() { return S.selMode; }, save, get sel() { return S.sel; }, selection: selectionList, pushHistory: push, clearHistory, leaveModes, undoStack: () => undoStack, handleKey, setTool, setMode, setSelMode, selectAll, undo, redo, exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; } };
 }
 
 // Minimal store-only ZIP writer (no compression) so the download works fully offline.
 const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 const crc32 = (d) => { let c = 0xffffffff; for (let i = 0; i < d.length; i++) c = CRC[(c ^ d[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+export function readStoredZip(buf) {
+  const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const view = new DataView(u.buffer, u.byteOffset, u.byteLength);
+  let eocd = -1;
+  for (let i = u.length - 22; i >= Math.max(0, u.length - 22 - 65536); i--) if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('Not a zip file');
+  const count = view.getUint16(eocd + 10, true);
+  let off = view.getUint32(eocd + 16, true);
+  const files = {};
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(off, true) !== 0x02014b50) throw new Error('Bad zip directory');
+    const method = view.getUint16(off + 10, true);
+    const size = view.getUint32(off + 20, true);
+    const nameLen = view.getUint16(off + 28, true);
+    const extra = view.getUint16(off + 30, true);
+    const comment = view.getUint16(off + 32, true);
+    const local = view.getUint32(off + 42, true);
+    const name = new TextDecoder().decode(u.subarray(off + 46, off + 46 + nameLen));
+    const nameLenL = view.getUint16(local + 26, true);
+    const extraL = view.getUint16(local + 28, true);
+    const start = local + 30 + nameLenL + extraL;
+    if (method !== 0) throw new Error('This zip uses compression. MeshForge project files are stored uncompressed.');
+    files[name] = u.slice(start, start + size);
+    off += 46 + nameLen + extra + comment;
+  }
+  return files;
+}
 export function makeZip(files) {
   const enc = new TextEncoder(), parts = [], central = []; let off = 0;
   for (const f of files) {

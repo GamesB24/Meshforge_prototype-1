@@ -1,5 +1,7 @@
 # MeshForge prototype - image → 3D, local GPU or cloud GPU
 
+v8 (see the repo root README and CHANGES.md): undo no longer clears the level, projects autosave, the outliner can group and hide, landscape buildings and trees are replaceable, and imports keep their materials.
+
 Drop an image, pick an engine and **Run on: Local GPU / Cloud GPU**, get a cleaned, low-poly (optionally quad) mesh as GLB/OBJ in a DCC-style 3D viewport.
 Engine now: **TripoSR** (MIT). Planned: PartCrafter (next, fits 8 GB), OmniPart, TRELLIS.2 (cloud).
 
