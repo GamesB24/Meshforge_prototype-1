@@ -1,6 +1,7 @@
 """v8 server checks: image cap, autosave rotation, and that a plugin key never hits disk or logs."""
 from __future__ import annotations
 import io
+import json
 import logging
 import os
 import sys
@@ -21,6 +22,7 @@ from meshforge.autosave import check_dir, rotate_write, list_autosaves, scrub_te
 from meshforge.server import app
 
 KEY = "MFTESTKEY-v8-do-not-leak-91c4"
+GOOGLE = "MFTESTGOOGLE-v8-do-not-leak-22ab"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -104,8 +106,88 @@ def test_key_does_not_land_on_disk():
     assert not hits, hits
 
 
+def test_agent_proxy_and_leak():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def _send(self, code, payload):
+            raw = json.dumps(payload).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            auth = self.headers.get("Authorization") or self.headers.get("x-api-key") or ""
+            if KEY not in auth:
+                self._send(401, {"error": "no"})
+                return
+            self._send(200, {"data": [{"id": "mock-model"}]})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            if self.path.endswith("/chat/completions"):
+                self._send(200, {"choices": [{"message": {"content": "listed", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_objects", "arguments": "{}"}}]}}]})
+                return
+            if self.path.endswith("/images/generations"):
+                self._send(200, {"data": [{"b64_json": "aaaa"}]})
+                return
+            if "generateContent" in self.path:
+                if self.headers.get("x-goog-api-key") != GOOGLE:
+                    self._send(401, {"error": "no"})
+                    return
+                self._send(200, {"candidates": [{"content": {"parts": [{"inlineData": {"data": "bbbb"}}]}}]})
+                return
+            self._send(404, {})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    import threading
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}/v1"
+    client = TestClient(app)
+    bad = client.post("/api/plugins/ai-agent/connect", json={"provider": "openai", "base": base}, headers={"X-Plugin-Secret-Provider": "wrong-key"})
+    assert bad.status_code == 200 and bad.json()["status"] == "invalid", bad.text
+    assert KEY not in bad.text and "wrong-key" not in bad.text
+    ok = client.post("/api/plugins/ai-agent/connect", json={"provider": "openai", "base": base}, headers={"X-Plugin-Secret-Provider": KEY})
+    assert ok.json()["status"] == "connected", ok.text
+    assert KEY not in ok.text
+    chat = client.post("/api/plugins/ai-agent/chat", json={"provider": "openai", "base": base, "model": "mock-model", "messages": [{"role": "user", "content": "list"}], "tools": [{"name": "list_objects", "description": "list", "parameters": {"type": "object"}}]}, headers={"X-Plugin-Secret-Provider": KEY})
+    body = chat.json()
+    assert body["tool_calls"][0]["name"] == "list_objects", body
+    assert KEY not in chat.text
+    image = client.post("/api/plugins/ai-agent/image", json={"provider": "openai", "base": base, "prompt": "boat"}, headers={"X-Plugin-Secret-Provider": KEY})
+    assert image.json()["spends"] is True and image.json()["image"].startswith("data:image/png"), image.text
+    views = client.post("/api/plugins/ai-agent/views", json={"prompt": "boat", "base": f"http://127.0.0.1:{port}"}, headers={"X-Plugin-Secret-Google": GOOGLE})
+    assert len(views.json()["images"]) == 4, views.text
+    assert GOOGLE not in views.text
+    down = client.post("/api/plugins/ai-agent/connect", json={"provider": "openai", "base": "http://127.0.0.1:1/v1"}, headers={"X-Plugin-Secret-Provider": KEY})
+    assert down.json()["status"] == "network"
+    assert KEY not in down.text
+    server.shutdown()
+    hits = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or path.name.startswith("test_v8_"):
+            continue
+        if any(part in {".venv", "node_modules", "__pycache__"} for part in path.parts):
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if KEY.encode() in data or GOOGLE.encode() in data:
+            hits.append(str(path))
+    assert not hits, hits
+
+
 if __name__ == "__main__":
     test_input_cap()
     test_autosave_rotation_and_scrub()
     test_key_does_not_land_on_disk()
+    test_agent_proxy_and_leak()
     print("server tests ok")

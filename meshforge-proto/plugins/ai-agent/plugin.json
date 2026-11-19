@@ -1,0 +1,9 @@
+{
+  "id": "ai-agent",
+  "name": "AI Agent",
+  "version": "1.0",
+  "licence": "MIT",
+  "entry": "entry.js",
+  "backend": "backend.py",
+  "minMeshForge": "8.0"
+}

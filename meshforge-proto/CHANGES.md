@@ -14,6 +14,8 @@
 
 **Pose Mode.** The mode menu has Pose Mode. A generated mesh has no skeleton, so Pose Mode stays in Object Mode and says you need a rigged GLB or glTF (for example a Blender export with Skinning on).
 
+**AI Agent plugin** (`plugins/ai-agent`). Connect checks Anthropic, OpenAI, xAI, or an OpenAI-compatible base URL (Ollama) with one small request and shows Connected, Invalid key, or Network error. The key stays in session memory and is sent only as `X-Plugin-Secret-*`. Chat can use the browser speech API where Chrome or Edge provides it, and can speak replies. Tools are a fixed list (no eval): scene edits, materials, landscape, mesh operations, image-to-3D, and an optional paid four-view Gemini step. Each editor action is one undo step. Text-to-image and the four views are labelled as paid. See docs/ai-agent.md.
+
 **Secrets stay in the tab.** A plugin key is held in memory for the session and marked "not verified". If the plugin never attaches it to a request, the status says so. Scene From Photo does not call a model provider, so typing a key does not sign you in. Keys are not written to autosaves, plugin state, job records or logs. See SECURITY.md.
 
 ## Tested

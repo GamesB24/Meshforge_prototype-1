@@ -15,4 +15,6 @@ plugins/*/secrets/**
 plugins/*
 !plugins/_example/
 !plugins/_example/**
+!plugins/ai-agent/
+!plugins/ai-agent/**
 !plugins/plugins-state.json

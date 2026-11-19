@@ -44,6 +44,7 @@ const axZ = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.V
 scene.add(axX, axZ);
 let model = null;
 let recover = null;
+let meshLib = null;
 let editor = null;
 let sculpt = null; // Sculpt mode (v5)
 let curTool = 'select';
@@ -821,7 +822,7 @@ import('./meshops.js').then((ops) => {
     },
     fitManifestMetres(manifest,knownDimension,measuredDimension,opts={}) {const f=metricFactor(knownDimension,measuredDimension),out=structuredClone(manifest);for(const o of out.objects||[]){o.position=(o.position||[0,0,0]).map(x=>x*f);o.scale=Array.isArray(o.scale)?o.scale.map(x=>x*f):(o.scale??1)*f}for(const k of ['position','target'])if(out.room?.camera?.[k])out.room.camera[k]=out.room.camera[k].map(x=>x*f);if(opts.applyRotation){const a=+(out.xAxisYawOffset??out.room?.xAxisYawOffset??0);if(!Number.isFinite(a))throw Error('xAxisYawOffset must be finite');const c=Math.cos(a),sn=Math.sin(a),tx=v=>[c*v[0]+sn*v[2],v[1],-sn*v[0]+c*v[2]];for(const o of out.objects||[])o.position=tx(o.position);for(const k of ['position','target'])if(out.room?.camera?.[k])out.room.camera[k]=tx(out.room.camera[k]);}if(opts.floor)for(const o of out.objects||[])o.position[1]=opts.floorY??0;out.units='m';out.metricScaleFactor=f;return out;},
   };
-  Object.assign(window.MeshForge,mfOps);window.MeshForge.meshOps=ops;
+  Object.assign(window.MeshForge,mfOps);window.MeshForge.meshOps=ops; meshLib = ops;
 }).catch(e=>console.error('Mesh operations failed:',e));
 
 // ---------- v8 autosave, project files, content browser ----------
@@ -850,6 +851,175 @@ recover = createRecover({
   status: (m) => { $('progMsg').textContent = m; },
   setCamera,
 });
+function findSceneNode(id) {
+  if (!id) return editor.sel;
+  let found = null;
+  model?.traverse((o) => {
+    if (found || o.userData?.isOverlay) return;
+    if (o.userData?.sceneId === id || o.name === id || o.uuid === id) found = o;
+  });
+  return found;
+}
+function patchInto(target, patch) {
+  if (!patch || typeof patch !== 'object') return;
+  for (const [k, v] of Object.entries(patch)) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && target[k] && typeof target[k] === 'object') patchInto(target[k], v);
+    else target[k] = v;
+  }
+}
+function maskFromDataUrl(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = 64, h = 64, c = document.createElement('canvas'); c.width = w; c.height = h;
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+      const px = g.getImageData(0, 0, w, h).data, data = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) data[i] = (px[i * 4 + 3] > 16 && (px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2]) / 3 < 245) ? 1 : 0;
+      resolve({ data, width: w, height: h, w, h });
+    };
+    img.onerror = () => reject(new Error('Bad image'));
+    img.src = url;
+  });
+}
+const agentActions = {
+  addPrimitive(kind, name) {
+    const k = String(kind || 'cube');
+    if (k === 'sky' || k === 'water') { const mesh = addPrimitive(k); return { ok: true, name: mesh.name, id: mesh.userData.sceneId }; }
+    const geo = k === 'sphere' ? new THREE.SphereGeometry(0.45, 24, 16) : k === 'plane' ? new THREE.PlaneGeometry(1.2, 1.2).rotateX(-Math.PI / 2) : new THREE.BoxGeometry(0.8, 0.8, 0.8);
+    if (k === 'cube' || k === 'sphere') geo.translate(0, 0.4, 0);
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc8c8c8, roughness: 0.55, side: THREE.DoubleSide }));
+    mesh.name = name || (k.charAt(0).toUpperCase() + k.slice(1));
+    const root = ensureScene(true);
+    addUndoable(root, mesh, { id: k, label: mesh.name, source: 'agent' }, 'Add ' + mesh.name);
+    applyShading(); updateInfo();
+    return { ok: true, name: mesh.name, id: mesh.userData.sceneId };
+  },
+  transform(id, spec = {}) {
+    const o = findSceneNode(id);
+    if (!o) return { ok: false, error: 'No object' };
+    const before = { p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() };
+    if (Array.isArray(spec.position)) o.position.set(+spec.position[0] || 0, +spec.position[1] || 0, +spec.position[2] || 0);
+    if (Array.isArray(spec.rotation)) o.rotation.set((+spec.rotation[0] || 0) * Math.PI / 180, (+spec.rotation[1] || 0) * Math.PI / 180, (+spec.rotation[2] || 0) * Math.PI / 180);
+    if (Array.isArray(spec.scale)) o.scale.set(+spec.scale[0] || 1, +spec.scale[1] || 1, +spec.scale[2] || 1);
+    else if (Number.isFinite(+spec.scale)) o.scale.setScalar(+spec.scale);
+    const after = { p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() };
+    editor.pushHistory({ label: 'Transform ' + o.name, undo: () => { o.position.copy(before.p); o.quaternion.copy(before.q); o.scale.copy(before.s); updateInfo(); }, redo: () => { o.position.copy(after.p); o.quaternion.copy(after.q); o.scale.copy(after.s); updateInfo(); } });
+    updateInfo();
+    return { ok: true, name: o.name, id: o.userData.sceneId || o.uuid };
+  },
+  createMaterial(def = {}) {
+    const made = mats.create({ name: def.name || 'Material', color: def.color || '#d0d0d0', shade: def.shade || '#5b4a7a', bands: def.bands, rim: def.rim });
+    const snap = JSON.parse(JSON.stringify(made));
+    editor.pushHistory({ label: 'Create material ' + made.name, undo: () => { mats.remove(made.id); }, redo: () => { if (!mats.byId(made.id)) mats.create(snap); } });
+    return { ok: true, id: made.id, name: made.name };
+  },
+  duplicateMaterial(id) {
+    const made = mats.duplicate(id);
+    if (!made) return { ok: false, error: 'No material' };
+    const snap = JSON.parse(JSON.stringify(made));
+    editor.pushHistory({ label: 'Duplicate material', undo: () => { mats.remove(made.id); }, redo: () => { if (!mats.byId(made.id)) mats.create(snap); } });
+    return { ok: true, id: made.id, name: made.name };
+  },
+  assignMaterial(objectId, materialId) {
+    const o = findSceneNode(objectId) || editor.sel;
+    if (!o?.isMesh) return { ok: false, error: 'Select a mesh' };
+    const ok = mats.assignObject(o, materialId);
+    return { ok: !!ok, name: o.name };
+  },
+  editMaterial(id, patch) {
+    const prev = mats.byId(id);
+    if (!prev) return { ok: false, error: 'No material' };
+    const before = JSON.parse(JSON.stringify(prev));
+    const next = {};
+    if (patch.color) next.color = patch.color;
+    if (patch.shade) next.shade = patch.shade;
+    if (patch.bands != null) next.bands = patch.bands;
+    if (patch.rim != null) next.rim = patch.rim;
+    if (patch.name) next.name = patch.name;
+    mats.update(id, next);
+    editor.pushHistory({ label: 'Edit material', undo: () => mats.update(id, before), redo: () => mats.update(id, { ...before, ...next }) });
+    return { ok: true, id, name: mats.byId(id).name };
+  },
+  async setMode(mode) {
+    const prev = editor.mode;
+    await editor.setMode(mode);
+    const now = editor.mode;
+    editor.pushHistory({ label: 'Mode ' + now, undo: () => editor.setMode(prev), redo: () => editor.setMode(now) });
+    return now;
+  },
+  generateLandscape(seed) {
+    const before = { params: JSON.parse(JSON.stringify(land.state.params)), paint: land.state.paint.slice(), regions: JSON.parse(JSON.stringify(land.state.regions || [])) };
+    const used = seed ?? Math.floor(Math.random() * 1e6);
+    land.generate({ seed: used, randomize: true, regions: true });
+    const redo = () => land.generate({ seed: used, randomize: true, regions: true });
+    editor.pushHistory({ label: 'Generate landscape', undo: () => { patchInto(land.state.params, before.params); land.state.paint = before.paint; land.state.regions = before.regions; land.rebuild(); }, redo });
+    return { ok: true, seed: used };
+  },
+  setLandscape(patch) {
+    const before = JSON.parse(JSON.stringify(land.state.params));
+    patchInto(land.state.params, patch || {});
+    land.rebuild();
+    editor.pushHistory({ label: 'Landscape settings', undo: () => { patchInto(land.state.params, before); land.rebuild(); }, redo: () => { patchInto(land.state.params, patch || {}); land.rebuild(); } });
+    return { ok: true };
+  },
+  async decimate(id, target) {
+    if (!window.MeshForge.decimate) return { ok: false, error: 'Mesh tools are still loading' };
+    await window.MeshForge.selectObject(id);
+    const r = window.MeshForge.decimate(id || editor.sel, +target || 2000);
+    return { ok: true, triangles: r?.watertightness?.triangles };
+  },
+  async retopo(id, target) {
+    if (!window.MeshForge.retopo) return { ok: false, error: 'Mesh tools are still loading' };
+    const r = await window.MeshForge.retopo(id || editor.sel, { target: +target || 2000 });
+    return { ok: !!r, note: 'approximate' };
+  },
+  snapToFloor(id, floorY = 0) {
+    if (!window.MeshForge.snapToFloor) return { ok: false, error: 'Mesh tools are still loading' };
+    const r = window.MeshForge.snapToFloor(id || 'all', +floorY || 0);
+    return { ok: true, count: r.length };
+  },
+  async startGenerate(dataUrl) {
+    const blob = await (await fetch(dataUrl)).blob();
+    const file = new File([blob], 'chat.png', { type: blob.type || 'image/png' });
+    state.file = file;
+    try { await recover?.write('before-generate'); } catch { /* still submit */ }
+    const fd = new FormData();
+    fd.append('image', file); fd.append('engine', $('engine')?.value || 'triposr'); fd.append('runner', state.runner || 'local'); fd.append('remove_bg', 'true');
+    fd.append('params', JSON.stringify({ resolution: +($('res')?.value || 256), input_size: +($('inres')?.value || 1024), remesh: 'decimate', target_faces: 8000, sharp_angle: 40, smooth_strength: 0.3, split_components: false }));
+    const r = await fetch('/api/jobs', { method: 'POST', body: fd });
+    if (!r.ok) return { ok: false, error: 'Generate failed' };
+    const j = await r.json();
+    track(j.id);
+    return { ok: true, job: j.id };
+  },
+  async carveFromImages(images) {
+    if (!meshLib) return { ok: false, error: 'Mesh tools are still loading' };
+    if (!images || images.length < 4) return { ok: false, error: 'Need four views' };
+    const views = [[0, 0.4, 2.4], [0, 0.4, -2.4], [2.4, 0.4, 0], [-2.4, 0.4, 0]];
+    const masks = [], cams = [];
+    for (let i = 0; i < 4; i++) {
+      masks.push(await maskFromDataUrl(images[i]));
+      cams.push({ position: views[i], target: [0, 0.3, 0], up: [0, 1, 0], focal: 64 });
+    }
+    const geo = meshLib.voxelCarve(masks, cams, { resolution: 32 });
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.6, side: THREE.DoubleSide }));
+    mesh.name = 'Carved';
+    addUndoable(ensureScene(true), mesh, { id: 'carved', label: 'Carved', source: 'agent' }, 'Voxel carve');
+    applyShading(); updateInfo();
+    return { ok: true, name: mesh.name, id: mesh.userData.sceneId };
+  },
+  async exportScene(format) {
+    await editor.exportAs(format === 'obj' ? 'obj' : 'glb');
+    return { ok: true };
+  },
+  async editSelectAll() {
+    if (editor.mode !== 'edit') await editor.setMode('edit');
+    if (editor.mode !== 'edit') return { ok: false, error: editor.mode === 'pose' ? 'Pose Mode needs a rig' : 'Edit Mode did not open' };
+    editor.selectAll(true);
+    return { ok: true };
+  },
+};
 Object.assign(window.MeshForge, {
   undo: () => editor.undo(), redo: () => editor.redo(),
   autosaveNow: (reason) => recover.write(reason || 'manual'),
@@ -857,6 +1027,7 @@ Object.assign(window.MeshForge, {
   joinSelection: () => doJoin(selectionMeshes()),
   selectSimilar: () => doSimilar(editor.sel),
   hideSelection: hideSelected, unhideAll,
+  actions: agentActions,
 });
 const dock = document.createElement('div'); dock.id = 'contentDock'; vp.appendChild(dock); mountBrowser(dock);
 Object.assign(ACTIONS, {

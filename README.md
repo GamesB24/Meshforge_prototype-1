@@ -16,7 +16,7 @@ Drop a photo in, get a mesh on your own GPU, then move, sculpt, paint and lay ou
 - Preview a rigged GLB (skeleton, clips, pose). Pose Mode tells you when a mesh has no rig
 - Save a `.mfproj` project, autosave on a timer, and recover the newest copy
 - Group, hide, join and select similar objects from the outliner
-- Add a trusted local plugin. Plugin API keys stay in the browser tab and are not saved
+- Add a trusted local plugin. The AI Agent plugin can connect to Claude, ChatGPT, Grok, or a local OpenAI-compatible model. Keys stay in the browser tab and are checked once, not saved
 
 ![Edit](meshforge-proto/docs/img/v3_edit_grab.png)
 ![Landscape](meshforge-proto/docs/img/v6_landscape_in_scene.png)
