@@ -134,6 +134,12 @@ def test_agent_proxy_and_leak():
             if self.path.endswith("/chat/completions"):
                 self._send(200, {"choices": [{"message": {"content": "listed", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_objects", "arguments": "{}"}}]}}]})
                 return
+            if self.path.endswith("/messages"):
+                if KEY not in (self.headers.get("x-api-key") or ""):
+                    self._send(401, {"error": "no"})
+                    return
+                self._send(200, {"content": [{"type": "text", "text": "listed"}, {"type": "tool_use", "id": "c1", "name": "list_objects", "input": {}}]})
+                return
             if self.path.endswith("/images/generations"):
                 self._send(200, {"data": [{"b64_json": "aaaa"}]})
                 return
@@ -157,6 +163,11 @@ def test_agent_proxy_and_leak():
     ok = client.post("/api/plugins/ai-agent/connect", json={"provider": "openai", "base": base}, headers={"X-Plugin-Secret-Provider": KEY})
     assert ok.json()["status"] == "connected", ok.text
     assert KEY not in ok.text
+    xai = client.post("/api/plugins/ai-agent/connect", json={"provider": "xai", "base": base}, headers={"X-Plugin-Secret-Provider": KEY})
+    assert xai.json()["status"] == "connected", xai.text
+    anth = client.post("/api/plugins/ai-agent/chat", json={"provider": "anthropic", "base": base, "model": "mock-model", "messages": [{"role": "user", "content": "list"}], "tools": [{"name": "list_objects", "description": "list", "parameters": {"type": "object"}}]}, headers={"X-Plugin-Secret-Provider": KEY})
+    assert anth.json()["tool_calls"][0]["name"] == "list_objects", anth.text
+    assert KEY not in anth.text
     chat = client.post("/api/plugins/ai-agent/chat", json={"provider": "openai", "base": base, "model": "mock-model", "messages": [{"role": "user", "content": "list"}], "tools": [{"name": "list_objects", "description": "list", "parameters": {"type": "object"}}]}, headers={"X-Plugin-Secret-Provider": KEY})
     body = chat.json()
     assert body["tool_calls"][0]["name"] == "list_objects", body
