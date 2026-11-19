@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "units": "m",
+  "up": "Y",
+  "photo": "photo.jpg",
+  "room": {"width": 4.0, "height": 2.6},
+  "objects": [
+    {"id": "obj_00", "label": "bedside table", "source": "library", "glb": "meshes/table.glb", "position": [-1.2, 0, -0.4], "rotation": [0, 0.3, 0], "scale": [1, 1, 1], "note": "synthetic demo"},
+    {"id": "obj_01", "label": "lamp", "source": "library", "glb": "meshes/lamp.glb", "position": [-1.2, 0.55, -0.4], "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+    {"id": "obj_02", "label": "chair", "source": "library", "glb": "meshes/chair.glb", "position": [0.6, 0, 0.2], "rotation": [0, -0.6, 0], "scale": [1, 1, 1]},
+    {"id": "obj_03", "label": "plant", "source": "generated", "glb": "meshes/plant.glb", "position": [1.5, 0, -0.8], "rotation": [0, 0, 0], "scale": 1.5}
+  ]
+}
