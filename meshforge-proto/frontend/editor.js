@@ -7,6 +7,8 @@ import { GLTFExporter } from 'three/addons/GLTFExporter.js';
 import { OBJExporter } from 'three/addons/OBJExporter.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
 import { PLYExporter } from 'three/addons/PLYExporter.js';
+import { copyData } from './mfdata.js';
+import { writeOBJBundle } from './objmtl.js';
 
 const ORANGE = new THREE.Color(0xff9a2e), DARK = new THREE.Color(0x101010), EDGE = new THREE.Color(0x1a1a1a), WHITE_V = new THREE.Color(0xffd27a);
 const AXIS = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
@@ -40,12 +42,31 @@ export function createEditor(ctx) {
         if (l > 1e-6) c.xy += d / l * px * 2.0 / res * c.w; gl_Position = c; }`,
     fragmentShader: `uniform vec3 color; void main(){ gl_FragColor = vec4(color, 1.0); }`,
   });
+  // v7: the same outline for skinned meshes (follows the pose)
+  const outlineSkinMat = new THREE.ShaderMaterial({
+    uniforms: outlineMat.uniforms, side: THREE.BackSide,
+    vertexShader: `#include <common>
+      #include <skinning_pars_vertex>
+      uniform float px; uniform vec2 res;
+      void main(){
+        #include <beginnormal_vertex>
+        #include <skinbase_vertex>
+        #include <skinnormal_vertex>
+        #include <begin_vertex>
+        #include <skinning_vertex>
+        vec4 c = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+        vec2 d = (projectionMatrix * vec4(normalMatrix * objectNormal, 0.0)).xy; float l = length(d);
+        if (l > 1e-6) c.xy += d / l * px * 2.0 / res * c.w; gl_Position = c; }`,
+    fragmentShader: outlineMat.fragmentShader,
+  });
   let outline = null;
   function select(obj) {
     if (outline) { outline.parent?.remove(outline); outline = null; }
     S.sel = obj || null;
     if (obj && S.mode === 'object') {
-      outline = new THREE.Mesh(obj.geometry, outlineMat); outline.userData.isOverlay = true; outline.raycast = () => {};
+      if (obj.isSkinnedMesh) { outline = new THREE.SkinnedMesh(obj.geometry, outlineSkinMat); outline.bind(obj.skeleton, obj.bindMatrix); outline.bindMode = obj.bindMode; outline.frustumCulled = false; }
+      else outline = new THREE.Mesh(obj.geometry, outlineMat);
+      outline.userData.isOverlay = true; outline.raycast = () => {};
       obj.add(outline);
     }
     updateGizmo(); ctx.updateInfo();
@@ -262,6 +283,16 @@ export function createEditor(ctx) {
 
   async function setMode(m) {
     if (m === S.mode || S.modal) { ctx.setModeUI(S.mode); return; }
+    if (S.mode === 'sculpt') { ctx.sculptExit?.(); S.mode = 'object'; }      // v5: leave Sculpt Mode first
+    if ((m === 'sculpt' || m === 'edit') && ctx.blockMode?.(S.sel || meshes()[0], m)) { ctx.setModeUI(S.mode); return; }
+    if (m === 'sculpt') {
+      destroyEdit();
+      const mesh = S.sel || meshes()[0];
+      if (!mesh) { status('Load or generate a model first, or use Add ▸ Sphere'); ctx.setModeUI('object'); return; }
+      select(mesh); if (outline) { outline.parent?.remove(outline); outline = null; }
+      if (!ctx.sculptEnter?.(mesh)) { S.mode = 'object'; select(mesh); ctx.setModeUI('object'); return; }
+      S.mode = 'sculpt'; tc.detach(); ctx.setModeUI('sculpt'); ctx.updateInfo(); return;
+    }
     if (m === 'edit') {
       const mesh = S.sel || meshes()[0];
       if (!mesh) { status('Load or generate a model first'); ctx.setModeUI('object'); return; }
@@ -332,6 +363,36 @@ export function createEditor(ctx) {
     refreshOverlay(false); updateGizmo();
   }
 
+  // v7: face selection helpers (materials / UV tools)
+  function faceSelection() {
+    if (!E) return []; const out = [];
+    if (S.selMode === 'face') { for (let t = 0; t < E.nt; t++) if (E.selF[t]) out.push(t); return out; }
+    const sv = new Uint8Array(E.nv); for (const w of selectedVerts()) sv[w] = 1;
+    for (let t = 0; t < E.nt; t++) if (sv[E.tris[t * 3]] && sv[E.tris[t * 3 + 1]] && sv[E.tris[t * 3 + 2]]) out.push(t);
+    return out;
+  }
+  function selectFaces(list, on = true) {
+    if (!E) return; if (S.selMode !== 'face') setSelMode('face');
+    for (const t of list) if (t < E.nt) E.selF[t] = on ? 1 : 0; refreshOverlay(false); updateGizmo();
+  }
+  function selectedEdgesW() { // welded vertex pairs of the selected edges (edge mode) or of edges between selected verts
+    if (!E) return []; const out = [];
+    if (S.selMode === 'edge') { for (let e = 0; e < E.ne; e++) if (E.selE[e]) out.push([E.edges[e * 2], E.edges[e * 2 + 1]]); return out; }
+    const sv = new Uint8Array(E.nv); for (const w of selectedVerts()) sv[w] = 1;
+    for (let e = 0; e < E.ne; e++) if (sv[E.edges[e * 2]] && sv[E.edges[e * 2 + 1]]) out.push([E.edges[e * 2], E.edges[e * 2 + 1]]);
+    return out;
+  }
+  // rebuild Edit Mode data after the geometry was re-indexed (e.g. a UV unwrap split vertices); keeps the selection by position
+  function rebuildEdit() {
+    if (!E) return; const mesh = E.mesh, keys = new Set(), fsel = E.selF.slice(), mode = S.selMode;
+    for (const w of selectedVerts()) keys.add(pkey(E.U[w * 3], E.U[w * 3 + 1], E.U[w * 3 + 2]));
+    const quad = E.useQuads ? S.quadCache[ctx.jobId()] : null; destroyEdit(); E = buildEdit(mesh, quad);
+    for (let w = 0; w < E.nv; w++) if (keys.has(pkey(E.U[w * 3], E.U[w * 3 + 1], E.U[w * 3 + 2]))) E.selV[w] = 1;
+    if (mode === 'face') { if (fsel.length === E.nt) E.selF.set(fsel); else for (let t = 0; t < E.nt; t++) E.selF[t] = E.selV[E.tris[t * 3]] & E.selV[E.tris[t * 3 + 1]] & E.selV[E.tris[t * 3 + 2]]; E.selV.fill(0); }
+    else if (mode === 'edge') { for (let e = 0; e < E.ne; e++) E.selE[e] = E.selV[E.edges[e * 2]] & E.selV[E.edges[e * 2 + 1]]; E.selV.fill(0); }
+    refreshOverlay(true); updateGizmo();
+  }
+
   // ---------- modal G / R / S ----------
   function pivotWorld() {
     if (S.mode === 'object') return S.sel ? new THREE.Box3().setFromObject(S.sel).getCenter(new THREE.Vector3()) : new THREE.Vector3();
@@ -394,6 +455,7 @@ export function createEditor(ctx) {
   vp.addEventListener('pointerdown', (e) => {
     if (S.modal) { e.preventDefault(); e.stopPropagation(); endModal(e.button === 0); return; }
     if (e.target !== canvas) return;
+    if (S.mode === 'sculpt' || ctx.blockPointer?.(e)) { S.down = null; return; }
     S.down = e.button === 0 ? { p: local(e), onGizmo: !!tc.object && tc.axis !== null } : null;
   }, true);
   addEventListener('pointermove', (e) => {
@@ -426,7 +488,8 @@ export function createEditor(ctx) {
     if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return true; }
     if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return true; }
     if (e.ctrlKey || e.metaKey || e.altKey && k !== 'a') return false;
-    if (e.key === 'Tab') { e.preventDefault(); setMode(S.mode === 'edit' ? 'object' : 'edit'); return true; }
+    if (e.key === 'Tab') { e.preventDefault(); setMode(S.mode === 'object' ? 'edit' : 'object'); return true; }
+    if (S.mode === 'sculpt') return false;
     if (k === 'g' || k === 'r' || k === 's') { e.preventDefault(); startModal(k.toUpperCase()); return true; }
     if (k === 'a') { e.preventDefault(); selectAll(e.altKey ? false : undefined); return true; }
     if (k === 'escape' && S.mode === 'object' && S.sel) { select(null); return true; }
@@ -438,30 +501,45 @@ export function createEditor(ctx) {
   function setTool(t) { S.tool = t; updateGizmo(); }
 
   // ---------- export ----------
-  function exportGroup() {
+  function exportGroup(only) {
     const model = ctx.getModel(); if (!model) return null;
+    const isScene = !!model.userData.isScene;
     model.updateMatrixWorld(true);
     const Ninv = (model.userData.norm || new THREE.Matrix4()).clone().invert(); // undo the viewer's fit-to-view scale only
     const g = new THREE.Group(); g.name = 'MeshForge';
     for (const m of meshes()) {
-      const geo = m.geometry.clone(); geo.applyMatrix4(new THREE.Matrix4().multiplyMatrices(Ninv, m.matrixWorld));
-      const src = m.userData.orig || m.material, mat = new THREE.MeshStandardMaterial({ color: src.color ? src.color.clone() : 0xffffff, vertexColors: !!geo.attributes.color, roughness: 0.6 });
-      const o = new THREE.Mesh(geo, mat); o.name = m.name || 'mesh'; g.add(o);
+      if (only && m !== only) continue;
+      if (ctx.skipExport?.(m)) continue;
+      const srcGeo = ctx.sculptGeometry?.(m) || m.geometry, geo = copyData(srcGeo, srcGeo.clone());
+      // v6 scenes: keep each object as its own named node with its transform (unless exporting one object on its own)
+      const keepXf = isScene && !only && m.parent === model;
+      if (!keepXf) geo.applyMatrix4(new THREE.Matrix4().multiplyMatrices(Ninv, m.matrixWorld));
+      const src0 = m.userData.orig || m.material, src = Array.isArray(src0) ? src0[0] : src0;
+      const mat = ctx.exportMaterial?.(m, geo) || new THREE.MeshStandardMaterial({ color: src.color ? src.color.clone() : 0xffffff, vertexColors: !!geo.attributes.color, roughness: 0.6, map: src.map && geo.attributes.uv ? src.map : null });
+      const o = new THREE.Mesh(geo, mat); o.name = m.name || 'mesh';
+      if (keepXf) { o.position.copy(m.position); o.quaternion.copy(m.quaternion); o.scale.copy(m.scale); o.visible = m.visible; o.userData = { id: m.userData.sceneId, label: m.userData.label, source: m.userData.source }; }
+      g.add(o);
     }
+    ctx.extendExport?.(g, { only, isScene, Ninv });
     g.updateMatrixWorld(true); return g;
   }
-  async function encode(fmt) {
-    const g = exportGroup(); if (!g) throw new Error('No model loaded');
-    if (fmt === 'glb') return new Blob([await new GLTFExporter().parseAsync(g, { binary: true })], { type: 'model/gltf-binary' });
-    if (fmt === 'obj') return new Blob([new OBJExporter().parse(g)], { type: 'text/plain' });
+  async function encode(fmt, only) {
+    const g = exportGroup(only); if (!g || !g.children.length) throw new Error('No model loaded');
+    if (fmt === 'glb') return new Blob([await new GLTFExporter().parseAsync(g, { binary: true, animations: g.userData.animations || [] })], { type: 'model/gltf-binary' });
+    if (fmt === 'obj') { if (needsMTL(g)) return new Blob([(await writeOBJBundle(g, baseName())).obj], { type: 'text/plain' }); return new Blob([new OBJExporter().parse(g)], { type: 'text/plain' }); }
     if (fmt === 'stl') return new Blob([new STLExporter().parse(g, { binary: true })], { type: 'model/stl' });
     if (fmt === 'ply') return new Blob([await new Promise((res) => new PLYExporter().parse(g, res, { binary: true }))], { type: 'application/octet-stream' });
     throw new Error('Unknown format ' + fmt);
   }
   function save(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
   const baseName = () => `meshforge_${ctx.jobId() || 'model'}`;
-  async function exportAs(fmt) {
-    try { const b = await encode(fmt); save(b, `${baseName()}.${fmt}`); status(`Exported ${fmt.toUpperCase()} (${(b.size / 1024).toFixed(0)} KB) with your edits and transforms`); }
+  function needsMTL(g) { let need = false; g.traverse((o) => { if (o.isMesh && (Array.isArray(o.material) || o.material?.map || o.material?.userData?.chibili)) need = true; }); return need; }
+  async function encodeOBJBundle(only) { const g = exportGroup(only); if (!g || !g.children.length) throw new Error('No model loaded'); return writeOBJBundle(g, baseName()); }
+  async function exportAs(fmt, only) {
+    if (fmt === 'obj') { try { const g = exportGroup(only); if (g && g.children.length && needsMTL(g)) { const b = await writeOBJBundle(g, baseName());
+      const files = [{ name: `${baseName()}.obj`, data: new TextEncoder().encode(b.obj) }, { name: `${baseName()}.mtl`, data: new TextEncoder().encode(b.mtl) }, ...b.images];
+      const z = makeZip(files); save(z, `${baseName()}_obj.zip`); status(`Exported OBJ + MTL${b.images.length ? ` + ${b.images.length} texture PNG(s)` : ''} as ${baseName()}_obj.zip`); return; } } catch (err) { status('Export failed: ' + err.message); console.error(err); return; } }
+    try { const b = await encode(fmt, only); save(b, only ? `${(only.name || 'object').replace(/[^\w.-]+/g, '_')}.${fmt}` : `${baseName()}.${fmt}`); status(`Exported ${fmt.toUpperCase()} (${(b.size / 1024).toFixed(0)} KB) with your edits and transforms`); }
     catch (err) { status('Export failed: ' + err.message); console.error(err); }
   }
   async function previewPNG() {
@@ -479,19 +557,21 @@ export function createEditor(ctx) {
     } catch (err) { status('Zip failed: ' + err.message); console.error(err); }
   }
 
-  function reset() { endModal(false); destroyEdit(); S.mode = 'object'; ctx.setModeUI('object'); select(null); undoStack.length = redoStack.length = 0; }
+  function clearHistory(msg) { undoStack.length = redoStack.length = 0; if (msg) status(msg); }
+  function reset() { endModal(false); if (S.mode === 'sculpt') ctx.sculptExit?.(); destroyEdit(); S.mode = 'object'; ctx.setModeUI('object'); select(null); undoStack.length = redoStack.length = 0; }
   function tick() {
     tc.camera = cam();
     const sz = ctx.renderer.getDrawingBufferSize(new THREE.Vector2()); outlineMat.uniforms.res.value.copy(sz); outlineMat.uniforms.px.value = 1.6 * ctx.renderer.getPixelRatio();
   }
   function infoLine() {
+    if (S.mode === 'sculpt') return ctx.sculptInfo?.() || '';
     if (S.mode === 'edit' && E) { const n = { vert: E.nv, edge: E.ne, face: E.nt }[S.selMode], s = { vert: E.selV, edge: E.selE, face: E.selF }[S.selMode].reduce((a, b) => a + b, 0);
       return `Edit Mode · ${s.toLocaleString()}/${n.toLocaleString()} ${{ vert: 'verts', edge: 'edges', face: 'tris' }[S.selMode]}`; }
     return S.sel ? `Selected: ${S.sel.name || 'mesh'}` : '';
   }
   // test hook
   const debug = { get S() { return S; }, get E() { return E; }, undoStack, redoStack, startModal, endModal, updateModal, pickObject, pickElement, boxSelect, encode, toScreen, meshes };
-  return { handleKey, setTool, setMode, setSelMode, selectAll, undo, redo, exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; } };
+  return { faceSelection, selectFaces, selectedEdgesW, rebuildEdit, encodeOBJBundle, get selMode() { return S.selMode; }, save, get sel() { return S.sel; }, pushHistory: push, clearHistory, undoStack: () => undoStack, handleKey, setTool, setMode, setSelMode, selectAll, undo, redo, exportAs, exportZip, encode, reset, tick, infoLine, select, debug, get mode() { return S.mode; } };
 }
 
 // Minimal store-only ZIP writer (no compression) so the download works fully offline.

@@ -1,0 +1,9 @@
+{
+  "id": "_example",
+  "name": "MeshForge Example",
+  "version": "1.0",
+  "licence": "MIT",
+  "entry": "entry.js",
+  "backend": "backend.py",
+  "minMeshForge": "7.1"
+}

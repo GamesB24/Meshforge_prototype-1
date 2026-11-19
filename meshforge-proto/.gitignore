@@ -1,5 +1,7 @@
 .venv/
-data/
+data/*
+!data/scenes/
+!data/scenes/**
 third_party/
 __pycache__/
 models/
