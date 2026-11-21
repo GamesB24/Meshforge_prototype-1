@@ -2,6 +2,7 @@
 // Stop restores every content object's transform, visibility and colour, and drops objects spawned during play.
 // Original MIT code. The old built-in shooter / kiosk / drone launch has been removed from this path.
 import * as THREE from 'three';
+import { ensureAll, moveActor } from './collision.js';
 import { listBehaviours } from './behaviours.js';
 import { driveHumanoid } from './character_anim.js';
 
@@ -185,12 +186,11 @@ export function createGameMode(ctx) {
       _move.addScaledVector(_right, S.stick.x);
       _move.addScaledVector(_fwd, S.stick.z);
     }
+    const slow = beh._inWater ? 0.45 : 1;
+    const delta = new THREE.Vector3();
     if (_move.lengthSq() > 0) {
-      _move.normalize().multiplyScalar(speed * dt);
-      const parent = obj.parent;
-      const world = obj.getWorldPosition(new THREE.Vector3()).add(_move);
-      if (parent) obj.position.copy(parent.worldToLocal(world));
-      else obj.position.copy(world);
+      _move.normalize().multiplyScalar(speed * slow * dt);
+      delta.copy(_move);
       if (!beh._facing) beh._facing = new THREE.Vector3();
       beh._facing.set(_move.x, 0, _move.z);
       if (beh._facing.lengthSq() > 1e-8) {
@@ -198,11 +198,21 @@ export function createGameMode(ctx) {
         obj.rotation.y = Math.atan2(beh._facing.x, beh._facing.z);
       }
     }
-    if (S.keys.Space && beh._vy === 0 && obj.position.y <= beh._ground + 0.02) beh._vy = p.jump ?? 6;
+    if (S.keys.Space && beh._vy === 0 && obj.position.y <= beh._ground + 0.05) beh._vy = p.jump ?? 6;
     beh._vy -= 18 * dt;
-    obj.position.y += beh._vy * dt;
-    if (obj.position.y <= beh._ground) { obj.position.y = beh._ground; beh._vy = 0; }
-    const moving = _move.lengthSq() > 1e-8;
+    delta.y = beh._vy * dt;
+    const world = obj.getWorldPosition(new THREE.Vector3());
+    const meshes = [];
+    contentRoot()?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay && !o.userData.isBoneViz && !o.userData.isCollisionDebug) meshes.push(o); });
+    const resolved = moveActor(obj, world, delta, meshes);
+    const parent = obj.parent;
+    const next = resolved.position.clone();
+    if (parent) obj.position.copy(parent.worldToLocal(next));
+    else obj.position.copy(next);
+    beh._inWater = resolved.inWater;
+    if (next.y <= beh._ground + 0.02) { obj.position.y = beh._ground; beh._vy = 0; beh._inWater = beh._inWater && true; }
+    else if (delta.y < 0 && next.y > world.y + delta.y + 0.001) beh._vy = 0;
+    const moving = delta.x * delta.x + delta.z * delta.z > 1e-8;
     const running = !!(S.keys.ShiftLeft || S.keys.ShiftRight);
     driveHumanoid(obj, { time: S.time, moving, running, jumping: (beh._vy || 0) > 0.2, speed });
     if (p.camera === 'follow') {
@@ -293,6 +303,7 @@ export function createGameMode(ctx) {
     if (S.state === 'pause') return resume();
     if (S.state === 'play') return true;
     window.MeshForge?.armature?.leave?.();
+    ensureAll(contentRoot());
     if (!contentRoot()) { status('Nothing in the scene yet. Add or generate objects, then press Play.'); return false; }
     if (fromStart) anim?.setFrame?.(anim.getStartFrame?.() ?? 0, { apply: false });
     beginSession();

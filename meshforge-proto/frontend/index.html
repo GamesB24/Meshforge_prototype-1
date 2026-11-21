@@ -72,6 +72,7 @@
       <span class="grow"></span>
       <label class="ib"><input type="checkbox" id="ovWire"> Wireframe overlay</label>
       <label class="ib"><input type="checkbox" id="ovGrid" checked> Grid</label>
+      <label class="ib"><input type="checkbox" id="ovCol"> Collision</label>
       <div class="shading" id="shading">
         <button data-v="wire" title="Wireframe (Z)">◇</button><button data-v="solid" class="on" title="Solid">●</button><button data-v="matcap" title="Matcap">◐</button><button data-v="color" title="Vertex colour / original material">◉</button><button data-v="chibili" class="chib" title="Chibili: toon material preview">✦</button>
       </div>
@@ -101,6 +102,11 @@
       <div class="xsteps"><span>Steps</span><input id="snapMove" type="number" step="0.01" min="0.001" value="0.1" title="Move snap"><input id="snapRot" type="number" step="1" min="1" value="15" title="Rotate snap, degrees"><input id="snapScale" type="number" step="0.01" min="0.001" value="0.1" title="Scale snap"></div>
       <div class="xh"><b>Behaviours</b><select id="behType"></select><button type="button" id="behAdd" title="Attach a behaviour to the active object">+</button></div>
       <div id="behList"></div>
+      <div class="xh"><b>Collision</b><button type="button" id="colApply" title="Apply these settings to every selected actor">Apply to selection</button></div>
+      <label class="chk"><input id="colOn" type="checkbox" checked> Enabled</label>
+      <div class="xr"><span>Preset</span><select id="colPreset"></select></div>
+      <div class="xr"><span>Type</span><select id="colType"></select></div>
+      <div class="xtools"><button type="button" id="colFit">Auto-fit</button><button type="button" id="colEdit">Edit shapes</button></div>
     </div>
     <div class="keys">Click select · Shift+click add · drag box select · G/R/S (X/Y/Z, Ctrl snap) · Esc clears selection · Alt+P play · Esc stop · Ctrl+Z undo</div>
     <div id="help" class="help" hidden><b>Keyboard shortcuts</b> <small>(click to close)</small>

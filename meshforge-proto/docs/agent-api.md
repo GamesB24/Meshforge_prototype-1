@@ -45,6 +45,8 @@ Every mutating tool returns `{ ok: true, ... }` or `{ ok: false, error }`. Spawn
 | `pose_bone` | Sets a bone rotation in degrees. |
 | `reset_pose` | Restores the rest pose. |
 | `key_pose` | Writes the active bone onto the timeline. |
+| `get_collision` | Reads enabled, type, preset, shapes and size for one actor. |
+| `set_collision` | Sets enabled, type (`box`, `sphere`, `capsule`, `convex`, `complex`, `none`) and preset (`BlockAll`, `OverlapAll`, `NoCollision`, `Pawn`, `Water`). `target: "selection"` updates every selected actor. |
 
 `POST /api/agent/command` only relays `{ action, params }` to the open page. The page runs the tool. `GET /api/agent/status` lists the same tool names.
 

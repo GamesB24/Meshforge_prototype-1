@@ -23,6 +23,8 @@ import { createAddMenu } from './addmenu.js';
 import { ADD_ITEMS, triangleCount } from './primitives.js';
 import { createArmatureTools } from './armature.js';
 import { createContentBrowser } from './content_browser.js';
+import { COLLISION_PRESETS, COLLISION_TYPES, createCollisionDebug, ensureAll, ensureCollision, fitCollision, publicCollision, setCollision } from './collision.js';
+import { createAssetEditor } from './asset_editor.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { file: null, runner: 'local', shading: 'solid', wireOverlay: false, current: null, config: null };
@@ -146,7 +148,7 @@ function updateInfo() {
   const extra = editor?.infoLine(); $('vinfo').innerHTML = `${viewLabel}<br><small>${model ? `(${objs}) object${objs > 1 ? 's' : ''} · ${Math.round(tris).toLocaleString()} tris` : 'No object'}</small>${extra ? `<br><small class="sel">${extra}</small>` : ''}`;
 }
 
-let addMenu, armature, contentLib;
+let addMenu, armature, contentLib, colDebug, assetEditor;
 const lastPtr = { x: 200, y: 200 };
 document.getElementById('c')?.addEventListener('pointermove', (e) => { lastPtr.x = e.clientX; lastPtr.y = e.clientY; });
 addEventListener('keydown', (e) => {
@@ -325,6 +327,7 @@ renderer.setAnimationLoop(() => {
   if (land?.active && state.shading === 'chibili') applyLandShading();
   if (gameMode.isSimulating()) gameMode.tick(delta);
   else animTimeline.tick(delta);
+  if (colDebug?.visible()) colDebug.rebuild(model);
   if (gameMode.allowsOrbit()) controls.update();
   companion.tick?.();
   mats?.tick();
@@ -346,6 +349,8 @@ function loadGLB(url, onDone, onError) {
     model.scale.setScalar(s); model.position.set(-c.x * s, -box.min.y * s, -c.z * s); model.updateMatrix(); model.userData.norm = model.matrix.clone();
     model.visible = !land?.active; scene.add(model); applyShading(); frameModel(); updateInfo();
     $('drop').classList.add('hidden'); window.__mfAfterGLB?.(model);
+    ensureAll(model);
+    model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay && !o.userData.isBoneViz) contentLib?.rememberObject(o, 'Generated'); });
     onDone?.(model);
   }, undefined, (e) => { console.error('GLB load failed', e); onError?.(e); });
 }
@@ -493,9 +498,10 @@ const sceneIO = createSceneIO({
   getRoot: () => model, editor, status: (m) => { $('progMsg').textContent = m; },
   setRoot: (root) => { editor.reset(); if (model) scene.remove(model); model = root; model.visible = !land?.active; scene.add(model); state.current = null; explodeK = 0; $('explode').value = 0; },
   afterLoad: (man, base) => {
-    applyShading(); setShading('color'); frameModel(); updateInfo();
+    applyShading(); setShading('color'); frameModel(); ensureAll(model); updateInfo();
     $('drop').classList.add('hidden'); document.querySelectorAll('[data-export]').forEach((b) => b.disabled = false);
     window.__mfAfterSceneLoad?.(man);
+    model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay) contentLib?.rememberObject(o, 'Imported'); });
     const ph = man?.photo; $('photoOv').hidden = true; $('oPhoto').hidden = !ph; if (ph) $('photoOv').src = sceneIO.resolve(ph);
   },
 });
@@ -518,6 +524,7 @@ addSceneMesh = (mesh, info = {}) => {
   $('drop').classList.add('hidden');
   document.querySelectorAll('[data-export]').forEach((b) => { b.disabled = false; });
   editor.select(mesh);
+  ensureCollision(mesh);
   updateInfo();
   return mesh;
 };
@@ -586,16 +593,17 @@ function refreshOutliner() {
   $('olist').innerHTML = items.map(({ obj: o, depth }, i) => `<li data-i="${i}" class="${editor.isSelected(o) ? 'sel' : ''} ${o === editor.sel ? 'active' : ''} ${o.visible ? '' : 'hid'}" style="padding-left:${6 + depth * 12}px"><button class="eye" title="Show / hide">${o.visible ? '👁' : '◌'}</button><span class="lbl" title="${esc(o.userData.sceneId || '')}">${esc(o.name || (o.isGroup ? 'Group' : 'Object'))}</span>${o.userData.source ? `<span class="badge">${esc(o.userData.source)}</span>` : ''}</li>`).join('');
   $('olist').querySelectorAll('li').forEach((li) => {
     const o = items[+li.dataset.i].obj;
-    li.onclick = (e) => {
-      if (e.target.classList.contains('eye')) {
-        o.visible = !o.visible;
-        if (!o.visible && editor.isSelected(o)) editor.select(o, { extend: true, toggle: true });
-        updateInfo();
-        return;
-      }
-      if (e.shiftKey) editor.select(o, { extend: true, toggle: true });
-      else selectObject(o);
-    };
+      li.onclick = (e) => {
+        if (e.target.classList.contains('eye')) {
+          o.visible = !o.visible;
+          if (!o.visible && editor.isSelected(o)) editor.select(o, { extend: true, toggle: true });
+          updateInfo();
+          return;
+        }
+        if (e.shiftKey) editor.select(o, { extend: true, toggle: true });
+        else selectObject(o);
+      };
+      li.ondblclick = (e) => { e.stopPropagation(); openCollisionEditor(o); };
   });
 }
 async function selectObject(o) {
@@ -712,6 +720,8 @@ function sendLandscapeToLevel() {
   frameModel(); updateInfo();
   const note = group.userData.spawnTruncated ? ` (${group.userData.spawnTruncated} extra instances were left out of the individual copies)` : '';
   $('progMsg').textContent = `Landscape is now part of the scene · ${group.children.length} objects${note}`;
+  ensureAll(group);
+  colDebug?.rebuild(model);
   return { name: group.name, children: group.children.map((c) => c.name) };
 }
 function captureSpawn() {
@@ -796,6 +806,82 @@ function refreshXform() {
     });
   }
   refreshBehaviours();
+  refreshCollision();
+}
+function refreshCollision() {
+  if (!$('colPreset') || !editor?.sel?.isMesh) return;
+  const active = document.activeElement;
+  if (active && ['colOn', 'colPreset', 'colType'].includes(active.id)) return;
+  if (!$('colPreset').dataset.ready) {
+    $('colPreset').innerHTML = COLLISION_PRESETS.map((p) => `<option>${p}</option>`).join('');
+    $('colType').innerHTML = COLLISION_TYPES.map((p) => `<option>${p}</option>`).join('');
+    $('colPreset').dataset.ready = '1';
+  }
+  const col = ensureCollision(editor.sel);
+  $('colOn').checked = col.enabled !== false;
+  $('colPreset').value = col.preset || 'BlockAll';
+  $('colType').value = col.type || 'box';
+}
+function applyCollision(patch) {
+  const chosen = editor.selection().filter((o) => o.isMesh);
+  const list = chosen.length ? chosen : (editor.sel?.isMesh ? [editor.sel] : []);
+  for (const o of list) setCollision(o, { ...patch, override: true });
+  colDebug?.rebuild(model);
+  $('progMsg').textContent = list.length > 1 ? `Collision applied to ${list.length} actors` : `Collision updated on ${list[0]?.name || 'the actor'}`;
+}
+function bindCollision() {
+  if (!$('colOn') || $('colOn').dataset.bound) return;
+  $('colOn').dataset.bound = '1';
+  $('colOn').onchange = () => applyCollision({ enabled: $('colOn').checked });
+  $('colPreset').onchange = () => applyCollision({ preset: $('colPreset').value });
+  $('colType').onchange = () => applyCollision({ type: $('colType').value });
+  $('colFit').onclick = () => { editor.selection().filter((o) => o.isMesh).concat(editor.sel?.isMesh ? [editor.sel] : []).forEach((o) => fitCollision(o, $('colType').value || 'box')); colDebug?.rebuild(model); refreshCollision(); };
+  $('colApply').onclick = () => applyCollision({ enabled: $('colOn').checked, preset: $('colPreset').value, type: $('colType').value });
+  $('colEdit').onclick = () => openCollisionEditor(editor.sel);
+  $('ovCol').onchange = () => colDebug?.set($('ovCol').checked, model);
+}
+function meshFromRecord(rec) {
+  if (!rec?.geometry?.position?.b64) return null;
+  const decode = (pack) => {
+    const bin = atob(pack.b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const Ctor = pack.kind === 'u16' ? Uint16Array : pack.kind === 'u32' ? Uint32Array : Float32Array;
+    return new Ctor(u8.buffer);
+  };
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(decode(rec.geometry.position), rec.geometry.position.itemSize || 3));
+  if (rec.geometry.index?.b64) geo.setIndex(new THREE.BufferAttribute(decode(rec.geometry.index), 1));
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: rec.material?.color || '#cccccc', roughness: 0.6 }));
+  mesh.name = rec.name || 'Asset';
+  if (rec.collision) mesh.userData.collision = JSON.parse(JSON.stringify(rec.collision));
+  else ensureCollision(mesh);
+  return mesh;
+}
+function findBySceneId(id) {
+  let found = null;
+  model?.traverse((o) => { if (!found && (o.userData.sceneId === id || o.uuid === id || o.name === id)) found = o; });
+  return found;
+}
+function dropPoint(cx, cy) {
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, camera);
+  const targets = [];
+  model?.traverse((o) => { if (o.isMesh && !o.userData.isOverlay && !o.userData.isBoneViz && !o.userData.isCollisionDebug) targets.push(o); });
+  const hit = ray.intersectObjects(targets, false)[0];
+  if (hit) return hit.point.clone();
+  const point = new THREE.Vector3();
+  return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), point) || new THREE.Vector3();
+}
+function openCollisionEditor(obj) {
+  const mesh = obj?.isMesh ? obj : editor.sel;
+  if (!mesh?.isMesh) return;
+  ensureCollision(mesh);
+  const asset = mesh.userData?.assetId ? contentLib?.assetById(mesh.userData.assetId) : null;
+  assetEditor?.open({ mesh, asset, title: mesh.name || 'Collision' });
 }
 function refreshBehaviours() {
   const host = $('behList'); if (!host || !editor?.sel) return;
@@ -1032,6 +1118,18 @@ contentLib = createContentBrowser({
   loadProject: (data) => project.loadData(data?.format ? data : { ...data, format: 'meshforge-project' }),
   appendObjects: (records) => project.appendObjects(records),
   selected: () => editor.sel,
+  findById: (id) => findBySceneId(id),
+  dropPoint,
+  openAsset: (id) => {
+    const asset = contentLib.assetById(id);
+    if (!asset) return false;
+    const rec = asset.payload?.objects?.[0];
+    const live = rec && findBySceneId(rec.id);
+    const mesh = live?.isMesh ? live : meshFromRecord(rec);
+    if (mesh && asset.payload?.collision && !mesh.userData.collision) mesh.userData.collision = JSON.parse(JSON.stringify(asset.payload.collision));
+    assetEditor.open({ mesh, asset, title: asset.name });
+    return true;
+  },
   spawnAsset: (id, name, rec) => {
     const pos = rec.geometry?.position;
     if (!pos?.b64) return false;
@@ -1043,10 +1141,39 @@ contentLib = createContentBrowser({
     geo.computeVertexNormals();
     land.setAsset(id, [geo]);
     land.addSpawner({ kind: id, assetId: id, name, count: 8, paints: ['grass'], maxSlope: 30, scaleMin: 0.8, scaleMax: 1.2 });
-    $('progMsg').textContent = `${name} can be scattered on the landscape`;
-    return true;
+  $('progMsg').textContent = `${name} can be scattered on the landscape`;
+  return true;
   },
 });
+colDebug = createCollisionDebug(scene);
+assetEditor = createAssetEditor({
+  status: (m) => { $('progMsg').textContent = m; },
+  refresh: () => { refreshCollision(); colDebug.rebuild(model); },
+  onAssetSaved: (asset) => contentLib.setAssetCollision(asset.id, asset.payload.collision),
+});
+bindCollision();
+window.MeshForge.collision = {
+  get: (id) => publicCollision(ensureCollision(typeof id === 'string' ? findBySceneId(id) || findObject(id) : (id || editor.sel))),
+  set: (id, patch) => {
+    const targets = id === 'selection' ? editor.selection().filter((o) => o.isMesh) : [typeof id === 'string' ? (findBySceneId(id) || findObject(id)) : (id || editor.sel)];
+    const out = [];
+    for (const o of targets) if (o?.isMesh) out.push({ name: o.name, collision: setCollision(o, patch) });
+    colDebug.rebuild(model);
+    refreshCollision();
+    return out;
+  },
+  ensureAll: () => ensureAll(model),
+  show: (on) => { $('ovCol').checked = !!on; colDebug.set(!!on, model); },
+  probe: (id) => {
+    const o = typeof id === 'string' ? findBySceneId(id) || findObject(id) : (id || editor.sel);
+    return { name: o?.name || null, collision: publicCollision(o?.userData?.collision), inWater: false };
+  },
+};
+window.MeshForge.openAssetEditor = (id) => {
+  if (id && contentLib.assetById(id)) return contentLib && assetEditor.open({ mesh: meshFromRecord(contentLib.assetById(id).payload?.objects?.[0]) || findBySceneId(id), asset: contentLib.assetById(id), title: contentLib.assetById(id).name }), true;
+  openCollisionEditor(typeof id === 'object' ? id : editor.sel);
+  return true;
+};
 window.MeshForge.addItem = (id) => { addMenu.choose(id); return editor.sel?.name || null; };
 window.MeshForge.openAddMenu = (x, y) => addMenu.open(x ?? lastPtr.x, y ?? lastPtr.y);
 window.MeshForge.armature = armature;

@@ -127,8 +127,27 @@ export function createContentBrowser(ctx) {
     ctx.status?.(`Saved level ${asset.name}`);
     return asset;
   }
-  async function place(id) {
-    const asset = allAssets().find((a) => a.id === id);
+  function rememberObject(obj, folder = 'Imported') {
+    if (!obj?.isMesh || obj.userData?.isOverlay || obj.userData?.isBoneViz) return null;
+    const existing = obj.userData.assetId && allAssets().find((a) => a.id === obj.userData.assetId);
+    if (existing) return existing;
+    const data = ctx.serialize?.();
+    const id = obj.userData.sceneId || obj.uuid;
+    const rec = (data?.objects || []).find((o) => o.id === id);
+    if (!rec) return null;
+    const asset = addAsset(folder, {
+      name: obj.name || 'Mesh',
+      type: 'mesh',
+      payload: { objects: [JSON.parse(JSON.stringify(rec))], collision: rec.collision || obj.userData.collision || null },
+    });
+    obj.userData.assetId = asset.id;
+    if (obj.userData.collision) obj.userData.collision.assetId = asset.id;
+    ctx.status?.(`${asset.name} is in the content browser (${folder}).`);
+    return asset;
+  }
+  function assetById(id) { return allAssets().find((a) => a.id === id) || null; }
+  async function place(id, point) {
+    const asset = assetById(id);
     if (!asset) return false;
     if (asset.type === 'level') {
       await ctx.loadProject?.(asset.payload);
@@ -143,10 +162,26 @@ export function createContentBrowser(ctx) {
     if (!objects?.length) { ctx.status?.('That asset has no objects'); return false; }
     const map = new Map();
     for (const r of objects) map.set(r.id, `${r.id}_${Math.random().toString(36).slice(2, 6)}`);
-    const cloned = objects.map((r) => ({ ...r, id: map.get(r.id), parent: r.parent ? map.get(r.parent) : null }));
+    const cloned = objects.map((r) => ({
+      ...r,
+      id: map.get(r.id),
+      parent: r.parent ? map.get(r.parent) : null,
+      collision: r.collision || asset.payload.collision || null,
+    }));
     await ctx.appendObjects?.(cloned);
-    ctx.status?.(`Added ${asset.name}`);
-    return true;
+    const placed = ctx.findById?.(cloned[0].id);
+    if (placed && point) {
+      placed.position.set(point.x, point.y, point.z);
+      placed.updateMatrixWorld();
+    }
+    if (placed && asset.payload.collision) {
+      placed.userData.collision = JSON.parse(JSON.stringify(asset.payload.collision));
+      placed.userData.collision.override = false;
+      placed.userData.collision.assetId = asset.id;
+      placed.userData.assetId = asset.id;
+    }
+    ctx.status?.(`Placed ${asset.name}`);
+    return placed || true;
   }
   function useAsSpawn(id) {
     const asset = allAssets().find((a) => a.id === id);
@@ -222,6 +257,7 @@ export function createContentBrowser(ctx) {
       source: 'imported',
       geometry: { position: pack(position), index: index ? pack(index) : null },
       material: { color: '#cccccc', roughness: 0.6, metalness: 0 },
+      collision: { enabled: true, type: 'box', preset: 'BlockAll', center: [0, 0.5, 0], size: [0.5, 0.5, 0.5], shapes: [{ type: 'box', center: [0, 0.5, 0], size: [0.5, 0.5, 0.5] }], override: false },
     };
   }
   function blobUrl(file) {
@@ -278,7 +314,9 @@ export function createContentBrowser(ctx) {
       const id = e.dataTransfer.getData('application/x-meshforge-asset');
       if (!id) return;
       e.preventDefault();
-      place(id);
+      e.stopPropagation();
+      const point = ctx.dropPoint?.(e.clientX, e.clientY);
+      place(id, point);
     });
     return true;
   }
@@ -304,7 +342,7 @@ export function createContentBrowser(ctx) {
     grid.innerHTML = assets.map((a) => `<button type="button" class="asset-card" draggable="true" data-id="${a.id}"><img alt="" src="${a.thumb || ''}"><span>${a.name}</span><small>${a.type}</small></button>`).join('') || '<div class="hint0">Empty folder. Import a file, or save a prefab or level.</div>';
     grid.querySelectorAll('.asset-card').forEach((card) => {
       card.ondragstart = (e) => e.dataTransfer.setData('application/x-meshforge-asset', card.dataset.id);
-      card.ondblclick = () => place(card.dataset.id);
+      card.ondblclick = () => ctx.openAsset?.(card.dataset.id) || place(card.dataset.id);
       card.onclick = () => { card.classList.add('on'); };
       card.oncontextmenu = (e) => { e.preventDefault(); useAsSpawn(card.dataset.id); };
     });
@@ -313,6 +351,15 @@ export function createContentBrowser(ctx) {
 
   return {
     createFolder, renameFolder, deleteFolder, saveSelection, saveLevel, place, importFile, useAsSpawn, exportJSON, importJSON,
+    rememberObject, assetById,
+    setAssetCollision(id, collision) {
+      const asset = assetById(id);
+      if (!asset) return false;
+      asset.payload = asset.payload || {};
+      asset.payload.collision = JSON.parse(JSON.stringify(collision));
+      remember();
+      return true;
+    },
     folders: () => Object.keys(lib.folders),
     assets: () => allAssets().map((a) => ({ id: a.id, name: a.name, type: a.type, folder: a.folder })),
     setTab(next) { tab = next; collapsed = false; remember(); paint(); },

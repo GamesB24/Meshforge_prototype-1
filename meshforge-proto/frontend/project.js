@@ -88,6 +88,7 @@ export function createProject(ctx) {
         visible: obj.visible !== false,
         source: obj.userData.source || '',
         behaviours: behavioursOf(obj),
+        collision: obj.userData.collision ? JSON.parse(JSON.stringify(obj.userData.collision)) : null,
         faceSetNames: obj.userData.faceSetNames || null,
         faceSetIds: obj.userData.faceSetIds ? b64FromTyped(obj.userData.faceSetIds) : null,
       };
@@ -180,6 +181,7 @@ export function createProject(ctx) {
     obj.userData.source = rec.source || 'project';
     obj.userData.label = obj.name;
     if (rec.behaviours?.length) obj.userData.behaviours = JSON.parse(JSON.stringify(rec.behaviours));
+    if (rec.collision) obj.userData.collision = JSON.parse(JSON.stringify(rec.collision));
     if (rec.faceSetNames && rec.faceSetIds) {
       obj.userData.faceSetNames = rec.faceSetNames.slice();
       obj.userData.faceSetIds = typedFromB64(rec.faceSetIds, Int32Array);

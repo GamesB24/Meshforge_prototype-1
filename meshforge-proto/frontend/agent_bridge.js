@@ -129,6 +129,8 @@ export function createAgentBridge(ctx) {
     { name: 'pose_bone', description: 'Set a bone rotation in degrees.', params: { bone: 'upper_arm.L', rotation: [0, 0, 30] } },
     { name: 'reset_pose', description: 'Restore the rest pose.', params: {} },
     { name: 'key_pose', description: 'Keyframe the active bone on the timeline.', params: {} },
+    { name: 'get_collision', description: 'Read collision settings for one actor or the selection.', params: { target: 'selected|name' } },
+    { name: 'set_collision', description: 'Set collision enabled, type and preset. type: none|box|sphere|capsule|convex|complex. preset: BlockAll|OverlapAll|NoCollision|Pawn|Water.', params: { target: 'selected|name', enabled: true, type: 'box', preset: 'BlockAll' } },
   ];
 
   function findObject(target) {
@@ -372,6 +374,15 @@ export function createAgentBridge(ctx) {
     },
     reset_pose: async () => ({ ok: !!window.MeshForge.armature?.resetPose?.() }),
     key_pose: async () => ({ ok: !!window.MeshForge.armature?.keyPose?.() }),
+    get_collision: async ({ target = 'selected' } = {}) => {
+      const one = window.MeshForge.collision?.get?.(target === 'selected' ? undefined : target);
+      return one ? { ok: true, collision: one } : { ok: false, error: 'No actor' };
+    },
+    set_collision: async ({ target = 'selected', enabled, type, preset } = {}) => {
+      const id = target === 'selected' ? 'selection' : target;
+      const rows = window.MeshForge.collision?.set?.(id, { enabled, type, preset }) || [];
+      return rows.length ? { ok: true, actors: rows } : { ok: false, error: 'No actor' };
+    },
     transfer_credits: async ({ amount = 100, target = 'Google Agent Wallet', reason = 'Store purchase' }) => {
       if (!auth) return { ok: false, error: 'Auth not initialized' };
       try {

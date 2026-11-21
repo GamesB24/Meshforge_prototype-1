@@ -106,6 +106,9 @@ Sculpting welds the mesh's shared vertices first so seams don't tear (vertex col
 - **Landscape** export from the File menu now includes the terrain, water and buildings with their materials.
 - Details, what was tested and the known limits are in CHANGES.md.
 
+## Collision, content browser and actors
+Every mesh is its own actor with a collision component: enabled, type (none, box, sphere, capsule, convex hull, complex per-poly) and a preset (BlockAll, OverlapAll, NoCollision, Pawn, Water). The properties panel edits the selection, and **Apply to selection** writes the same settings to every selected actor. The viewport **Collision** checkbox draws the shapes. During Play the character stops against BlockAll meshes and against landscape terrain, and a water plane is an overlap that slows movement instead of a wall. Imported and generated meshes are added to the content browser. Drag an asset into the viewport to place an instance on the ground or landscape. Double-click an asset or an actor to open the collision editor: add, move, resize or remove simple shapes, auto-fit, or generate a convex hull. Collision saved on the asset is the default for new instances. See docs/collision.md.
+
 ## Layout
 ```
 meshforge/  server.py (FastAPI) · jobs.py (queue + history) · preprocess.py · postprocess.py
