@@ -31,9 +31,17 @@ class LocalRunner(Runner):
     def run(self, engine_id, image, params, progress):
         eng = ENGINES.get(engine_id)
         if eng is None:
-            raise ValueError(f"Engine '{engine_id}' is not available locally yet")
+            raise ValueError(f"Engine '{engine_id}' is not available locally yet. Installed engines: {', '.join(ENGINES) or 'none'}.")
+        if not self.status()["ready"]:
+            raise ValueError("Local generation needs PyTorch. Install it with the MeshForge setup script, or switch Run on to Cloud GPU.")
         self.device = self.device or detect_device()
-        if eng.model is None:
-            progress(0.15, f"Loading {engine_id} on {self.device} (first run only)")
-        eng.load(self.device)
-        return eng.generate(image, params, progress).parts
+        if "torch not installed" in self.device:
+            raise ValueError("Local generation needs PyTorch. Install it with the MeshForge setup script, or switch Run on to Cloud GPU.")
+        try:
+            if eng.model is None:
+                progress(0.15, f"Loading {engine_id} on {self.device} (first run only)")
+            eng.load(self.device)
+            return eng.generate(image, params, progress).parts
+        except ImportError as e:
+            missing = getattr(e, "name", None) or "a required module"
+            raise ValueError(f"Local generation could not start because '{missing}' is not installed. Use the setup script, or switch Run on to Cloud GPU.") from e

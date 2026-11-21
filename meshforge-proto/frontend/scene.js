@@ -98,6 +98,7 @@ export function createSceneIO(ctx) {
     mesh.userData.note = info.note; mesh.userData.ref = info.glb || info.mesh || info.url || null; mesh.userData.extra = info.extra;
     if (info.color) { try { mesh.material.color = new THREE.Color(info.color); } catch { /* ignore bad colour */ } }
     if (info.visible === false) mesh.visible = false;
+    if (Array.isArray(info.behaviours)) mesh.userData.behaviours = JSON.parse(JSON.stringify(info.behaviours));
     root.add(mesh); return mesh;
   }
   const objects = () => (ctx.getRoot()?.userData.isScene ? ctx.getRoot().children.filter((o) => o.isMesh && o.userData.sceneId) : []);
@@ -177,6 +178,9 @@ export function createSceneIO(ctx) {
         position: m.position.toArray().map((x) => +x.toFixed(5)), rotation: [m.rotation.x, m.rotation.y, m.rotation.z].map((x) => +x.toFixed(5)),
         scale: m.scale.toArray().map((x) => +x.toFixed(5)), visible: m.visible, node: m.name });
       if (m.userData.note != null) o.note = m.userData.note;
+      if (Array.isArray(m.userData.behaviours) && m.userData.behaviours.length) {
+        o.behaviours = m.userData.behaviours.filter((b) => b && b.type).map((b) => ({ type: b.type, enabled: b.enabled !== false, params: b.params || {} }));
+      }
       return o;
     });
     return base;

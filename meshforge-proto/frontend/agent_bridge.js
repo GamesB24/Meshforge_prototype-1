@@ -108,6 +108,41 @@ export function createAgentBridge(ctx) {
   connectWebSocket();
 
   // ---------- Tool Execution Engine (DCC Actions) ----------
+  const TOOL_DOCS = [
+    { name: 'list_tools', description: 'List every tool the open scene accepts, with parameter names.', params: {} },
+    { name: 'get_scene_summary', description: 'Names, ids, transforms and behaviours of the current scene.', params: {} },
+    { name: 'spawn_primitive', description: 'Add a mesh to the open scene. Does not delete existing objects.', params: { type: 'cube|sphere|cylinder|plane|torus|ramp', color: '#hex', position: [0, 1, 0], scale: [1, 1, 1], name: 'string' } },
+    { name: 'delete_object', description: 'Delete one object by name or the selection. Undoable.', params: { target: 'selected|name' } },
+    { name: 'transform_object', description: 'Set position, rotation in degrees, or scale. Undoable.', params: { target: 'selected|name', position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] } },
+    { name: 'set_behaviour', description: 'Replace behaviours on one object. Types: spin, oscillate, character, follow, script.', params: { target: 'selected|name', type: 'spin', params: {} } },
+    { name: 'attach_script', description: 'Append a Play-mode script. The script receives api with dt, time, position, rotation, scale, get(name), key(code).', params: { target: 'selected|name', source: 'api.position.y += api.dt;', name: 'Script' } },
+    { name: 'build_level', description: 'Generate a landscape and place it in the open scene as real objects.', params: { seed: 1, width: 48, depth: 48, trees: 14 } },
+    { name: 'generate_level', description: 'Add a block arena (floor, walls, cover) to the open scene. Does not start Play.', params: { size: 30, obstacles: 8 } },
+    { name: 'set_material', description: 'Set colour, roughness or metalness on one mesh.', params: { target: 'selected|name', color: '#hex' } },
+    { name: 'set_shading', description: 'Viewport shading: solid, wire, matcap, color, chibili.', params: { mode: 'solid' } },
+    { name: 'set_environment', description: 'Add a sky dome and, when asked, a water plane. Existing objects stay.', params: { sky: true, water: true } },
+    { name: 'list_objects', description: 'Shorter object list: id, label, source, visibility, selection.', params: {} },
+    { name: 'companion_speak', description: 'Show a companion line. Does not change the scene.', params: { text: 'string' } },
+    { name: 'transfer_credits', description: 'Move wallet credits. Needs the MeshForge server.', params: { amount: 100, target: 'string' } },
+    { name: 'add_primitive', description: 'Add a primitive at the origin. Other objects stay. Types match the Shift+A menu.', params: { type: 'cube' } },
+    { name: 'create_humanoid', description: 'Fit a humanoid rig to a mesh and bind automatic weights.', params: { target: 'selected|name' } },
+    { name: 'pose_bone', description: 'Set a bone rotation in degrees.', params: { bone: 'upper_arm.L', rotation: [0, 0, 30] } },
+    { name: 'reset_pose', description: 'Restore the rest pose.', params: {} },
+    { name: 'key_pose', description: 'Keyframe the active bone on the timeline.', params: {} },
+    { name: 'get_collision', description: 'Read collision settings for one actor or the selection.', params: { target: 'selected|name' } },
+    { name: 'set_collision', description: 'Set collision enabled, type and preset. type: none|box|sphere|capsule|convex|complex. preset: BlockAll|OverlapAll|NoCollision|Pawn|Water.', params: { target: 'selected|name', enabled: true, type: 'box', preset: 'BlockAll' } },
+  ];
+
+  function findObject(target) {
+    if (!target || target === 'selected') {
+      const id = window.MeshForge.getSelected?.();
+      return window.MeshForge.getObjects?.().find((o) => o.id === id) ? editor.sel : editor.sel;
+    }
+    let found = null;
+    scene.traverse((o) => { if (!found && o.name === target) found = o; });
+    return found;
+  }
+
   const TOOLS = {
     // 1. Spawning Primitives & Objects
     spawn_primitive: async ({ type = 'cube', color = '#5588cc', position = [0, 1, 0], scale = [1, 1, 1], name = '' }) => {
@@ -147,9 +182,18 @@ export function createAgentBridge(ctx) {
       mesh.userData.isPrimitive = true;
       mesh.userData.mf = { slots: ['default'], active: 0, albedo: 'material', vcol: false };
 
-      const root = getModel() || scene;
-      root.add(mesh);
-      editor.select(mesh);
+      if (ctx.addObject) ctx.addObject(mesh, { id: mesh.name, label: mesh.name, source: 'primitive' });
+      else {
+        const root = getModel() || scene;
+        root.add(mesh);
+        editor.select(mesh);
+      }
+      const parent = mesh.parent;
+      editor.pushHistory?.({
+        label: 'Spawn ' + mesh.name,
+        undo: () => { if (editor.sel === mesh) editor.select(null); parent?.remove(mesh); },
+        redo: () => { parent?.add(mesh); },
+      });
       status(`Spawned ${mesh.name}`);
       return { ok: true, object_id: mesh.uuid, name: mesh.name };
     },
@@ -165,8 +209,10 @@ export function createAgentBridge(ctx) {
         return { ok: false, error: 'No target object' };
       }
       const name = obj.name;
+      const parent = obj.parent;
       editor.select(null);
-      obj.parent?.remove(obj);
+      parent?.remove(obj);
+      editor.pushHistory?.({ label: 'Delete ' + name, undo: () => parent?.add(obj), redo: () => { if (editor.sel === obj) editor.select(null); parent?.remove(obj); } });
       status(`Deleted ${name}`);
       return { ok: true, deleted: name };
     },
@@ -178,10 +224,14 @@ export function createAgentBridge(ctx) {
         scene.traverse((o) => { if (o.name.toLowerCase() === target.toLowerCase()) obj = o; });
       }
       if (!obj) return { ok: false, error: 'No object selected' };
+      const before = obj.matrix.clone();
       if (position) obj.position.set(position[0], position[1], position[2]);
       if (rotation) obj.rotation.set(rotation[0] * Math.PI / 180, rotation[1] * Math.PI / 180, rotation[2] * Math.PI / 180);
       if (scale) obj.scale.set(scale[0], scale[1], scale[2]);
       obj.updateMatrixWorld();
+      const after = obj.matrix.clone();
+      const apply = (m) => { m.decompose(obj.position, obj.quaternion, obj.scale); obj.updateMatrixWorld(true); };
+      editor.pushHistory?.({ label: 'Transform ' + obj.name, undo: () => apply(before), redo: () => apply(after) });
       status(`Transformed ${obj.name}`);
       return { ok: true };
     },
@@ -225,7 +275,52 @@ export function createAgentBridge(ctx) {
       return { ok: true };
     },
 
-    // 8. Generate Level Layout (Instant In-Engine Arena / Game Level)
+    list_tools: async () => ({ ok: true, tools: TOOL_DOCS }),
+    get_scene_summary: async () => {
+      const objects = (window.MeshForge.getObjects?.() || []).map((o) => ({ ...o, behaviours: window.MeshForge.getBehaviours?.(o.id) || [] }));
+      return { ok: true, mode: window.MeshForge.mode, workspace: window.MeshForge.workspace, count: objects.length, objects };
+    },
+    attach_script: async ({ target = 'selected', source = '', name = 'Script' } = {}) => {
+      if (!String(source).trim()) return { ok: false, error: 'Script source is empty.' };
+      const obj = findObject(target);
+      if (!obj) return { ok: false, error: 'No object matches that target.' };
+      const id = obj.userData.sceneId || obj.uuid;
+      const prev = window.MeshForge.getBehaviours?.(id) || [];
+      const next = prev.concat([{ type: 'script', enabled: true, params: { source, name } }]);
+      window.MeshForge.setBehaviours?.(id, next);
+      editor.pushHistory?.({
+        label: 'Attach script',
+        undo: () => window.MeshForge.setBehaviours(id, prev),
+        redo: () => window.MeshForge.setBehaviours(id, next),
+      });
+      status(`Attached a script to ${obj.name}. It runs during Play.`);
+      return { ok: true, name: obj.name, id };
+    },
+    list_objects: async () => ({ ok: true, objects: window.MeshForge.getObjects?.() || [] }),
+    set_behaviour: async ({ target = 'selected', type = 'spin', params = {} }) => {
+      const obj = findObject(target);
+      if (!obj) return { ok: false, error: 'No object for that behaviour' };
+      const id = obj.userData.sceneId || obj.uuid;
+      const prev = window.MeshForge.getBehaviours?.(id) || [];
+      const next = [{ type, enabled: true, params }];
+      const ok = window.MeshForge.setBehaviours?.(id, next);
+      if (ok) {
+        editor.pushHistory?.({
+          label: 'Behaviour ' + type,
+          undo: () => window.MeshForge.setBehaviours(id, prev),
+          redo: () => window.MeshForge.setBehaviours(id, next),
+        });
+      }
+      status(ok ? `Attached ${type} to ${obj.name}` : 'No object for that behaviour');
+      return { ok: !!ok, type, name: obj.name };
+    },
+    build_level: async ({ seed, width = 48, depth = 48, trees = 14 } = {}) => {
+      const res = window.MeshForge.buildLevel?.({ seed, width, depth, trees, randomize: true });
+      status(res ? `Built a landscape level in the scene (${res.children?.length || 0} objects). Press Play to run it.` : 'Could not build a level');
+      return { ok: !!res, ...(res || {}) };
+    },
+
+    // 8. Generate Level Layout (block arena, only when the user asks for an arena)
     generate_level: async ({ theme = 'arena', size = 30, obstacles = 8 }) => {
       status(`Constructing procedural ${theme} game level...`);
       // Ground plane
@@ -264,6 +359,30 @@ export function createAgentBridge(ctx) {
     },
 
     // 9. Wallet Credit Transfer (Metaverse kiosk transaction)
+    add_primitive: async ({ type = 'cube' } = {}) => {
+      const name = window.MeshForge.addItem?.(type);
+      return name ? { ok: true, name } : { ok: false, error: 'Unknown primitive' };
+    },
+    create_humanoid: async ({ target = 'selected' } = {}) => {
+      if (target && target !== 'selected') window.MeshForge.selectObject?.(target);
+      const res = window.MeshForge.armature?.humanoid?.();
+      return res ? { ok: true, bones: res.bones, name: res.mesh?.name } : { ok: false, error: 'Select a mesh first' };
+    },
+    pose_bone: async ({ bone = 'hips', rotation = [0, 0, 0] } = {}) => {
+      const ok = window.MeshForge.armature?.poseBone?.(bone, rotation);
+      return ok ? { ok: true, bone } : { ok: false, error: 'No bone with that name' };
+    },
+    reset_pose: async () => ({ ok: !!window.MeshForge.armature?.resetPose?.() }),
+    key_pose: async () => ({ ok: !!window.MeshForge.armature?.keyPose?.() }),
+    get_collision: async ({ target = 'selected' } = {}) => {
+      const one = window.MeshForge.collision?.get?.(target === 'selected' ? undefined : target);
+      return one ? { ok: true, collision: one } : { ok: false, error: 'No actor' };
+    },
+    set_collision: async ({ target = 'selected', enabled, type, preset } = {}) => {
+      const id = target === 'selected' ? 'selection' : target;
+      const rows = window.MeshForge.collision?.set?.(id, { enabled, type, preset }) || [];
+      return rows.length ? { ok: true, actors: rows } : { ok: false, error: 'No actor' };
+    },
     transfer_credits: async ({ amount = 100, target = 'Google Agent Wallet', reason = 'Store purchase' }) => {
       if (!auth) return { ok: false, error: 'Auth not initialized' };
       try {
@@ -334,9 +453,20 @@ export function createAgentBridge(ctx) {
     }
 
     // 2. Procedural level generation
-    if (lower.includes('generate level') || lower.includes('new arena') || lower.includes('create game') || lower.includes('make a level')) {
+    if (lower.includes('arena') || lower.includes('battle')) {
       await executeTool('generate_level', { theme: 'Sci-Fi Arena', obstacles: 10 });
-      addChatMessage('bot', 'Constructed a new battle arena! Press Play to enter.');
+      addChatMessage('bot', 'Built a block arena into the current scene. Press Play to run it.');
+      return;
+    }
+    if (lower.includes('landscape') || lower.includes('terrain') || lower.includes('make a game') || lower.includes('new game') || lower.includes('make a level') || lower.includes('create a level')) {
+      const trees = /tree/.test(lower) ? 24 : 14;
+      const res = await executeTool('build_level', { trees, width: 48, depth: 48 });
+      addChatMessage('bot', res.ok ? `Built a new landscape in this scene (${res.children?.length || 0} objects) with scatter and a playable ground. Press Play.` : 'I could not build that level.');
+      return;
+    }
+    if (lower.includes('spin')) {
+      await executeTool('set_behaviour', { type: 'spin', params: { axis: 'y', speed: 90 } });
+      addChatMessage('bot', 'The selected object now spins while Play is running.');
       return;
     }
 
@@ -407,20 +537,17 @@ export function createAgentBridge(ctx) {
         <button id="aiCloseBtn" class="ai-btn-icon" title="Close">✕</button>
       </div>
       <div id="aiSettings" class="ai-settings hidden">
-        <div class="ai-set-row">
-          <label>Google Cloud Login:</label>
-          <button id="btnGoogleAuth" class="btn-gsi">Sign in with Google</button>
+        <p class="hint0">Keys stay in this browser only. They are not written into project files.</p>
+        <div class="ai-set-row"><label>Provider</label>
+          <select id="inpProvider" class="ai-inp"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option><option value="xai">xAI</option><option value="custom">Custom OpenAI-compatible</option></select>
         </div>
-        <div class="ai-set-row">
-          <label>OpenAI API Key:</label>
-          <input id="inpOpenAI" type="password" placeholder="sk-..." class="ai-inp">
-          <button id="btnSaveOpenAI" class="btn sm">Save</button>
-        </div>
-        <div class="ai-set-row">
-          <label>Google Gemini Key:</label>
-          <input id="inpGemini" type="password" placeholder="AIzaSy..." class="ai-inp">
-          <button id="btnSaveGemini" class="btn sm">Save</button>
-        </div>
+        <div class="ai-set-row" id="rowBase" hidden><label>Base URL</label><input id="inpBase" class="ai-inp" placeholder="https://host/v1"></div>
+        <div class="ai-set-row"><label>API key</label><input id="inpKey" type="password" class="ai-inp" placeholder="Paste a key" autocomplete="off"></div>
+        <div class="ai-set-row"><button id="btnSaveKey" class="btn sm" type="button">Check and save</button><span id="keyStatus"></span></div>
+        <div class="ai-set-row"><label>Google OAuth client ID</label><input id="inpGoogleClient" class="ai-inp" placeholder="….apps.googleusercontent.com" autocomplete="off"></div>
+        <div class="ai-set-row"><button id="btnGoogleAuth" class="btn-gsi" type="button">Sign in with Google</button><button id="btnGoogleCheck" class="btn sm" type="button">Check setup</button></div>
+        <pre id="googleDiag" class="hint0"></pre>
+        <p class="hint0">Google sign-in identifies you. It does not create a Gemini API key. Only Gemini uses that login’s Google account; OpenAI, Anthropic and xAI need their own keys. The client must be a Web application OAuth client, and this page’s origin must be listed exactly.</p>
       </div>
       <div id="aiLog" class="ai-log">
         <div class="ai-msg bot">Hello! I am your MeshForge AI agent. You can type commands or press <b>V</b> to speak instructions.</div>
@@ -446,24 +573,41 @@ export function createAgentBridge(ctx) {
       panel.querySelector('#aiSettings').classList.toggle('hidden');
     };
 
-    // Google Sign-In button
+    const providerEl = panel.querySelector('#inpProvider');
+    const baseRow = panel.querySelector('#rowBase');
+    const baseEl = panel.querySelector('#inpBase');
+    const keyEl = panel.querySelector('#inpKey');
+    const keyStatus = panel.querySelector('#keyStatus');
+    const showProvider = () => {
+      const id = providerEl.value;
+      baseRow.hidden = id !== 'custom';
+      const saved = auth?.getProviderKey?.(id);
+      keyEl.value = saved?.apiKey || '';
+      if (id === 'custom') baseEl.value = saved?.baseUrl || '';
+    };
+    providerEl.onchange = showProvider;
+    showProvider();
+    panel.querySelector('#inpGoogleClient').value = auth?.googleClientId?.() || '';
+    panel.querySelector('#inpGoogleClient').onchange = (e) => auth?.setGoogleClientId(e.target.value);
+    panel.querySelector('#btnSaveKey').onclick = async () => {
+      keyStatus.textContent = 'Checking…';
+      try {
+        const result = await auth.saveProviderKey(providerEl.value, keyEl.value, baseEl.value);
+        keyStatus.textContent = result.message;
+      } catch (err) {
+        keyStatus.textContent = err.message;
+        status(err.message);
+      }
+    };
+    const diag = panel.querySelector('#googleDiag');
+    const showDiag = (text) => { if (diag) diag.textContent = text || ''; if (text) keyStatus.textContent = text; };
     panel.querySelector('#btnGoogleAuth').onclick = async () => {
-      await auth?.loginGoogle({ name: 'Google Creator', email: 'creator@gmail.com' });
+      try { await auth?.loginGoogle(); showDiag('Signed in. A Gemini API key is still separate.'); }
+      catch (err) { status(err.message); showDiag(err.message); }
     };
-
-    // OpenAI Key Save
-    const inpOpenAI = panel.querySelector('#inpOpenAI');
-    if (auth?.getOpenAIKey()) inpOpenAI.value = auth.getOpenAIKey();
-    panel.querySelector('#btnSaveOpenAI').onclick = async () => {
-      const k = inpOpenAI.value.trim();
-      if (k) await auth?.loginOpenAI(k);
-    };
-
-    // Gemini Key Save
-    const inpGemini = panel.querySelector('#inpGemini');
-    if (auth?.getGeminiKey()) inpGemini.value = auth.getGeminiKey();
-    panel.querySelector('#btnSaveGemini').onclick = () => {
-      auth?.setGeminiKey(inpGemini.value.trim());
+    panel.querySelector('#btnGoogleCheck').onclick = async () => {
+      const result = await auth?.checkGoogleSetup?.();
+      showDiag(result?.message || 'Google setup could not be checked.');
     };
 
     panel.querySelector('#aiForm').onsubmit = (e) => {
@@ -512,6 +656,7 @@ export function createAgentBridge(ctx) {
     executeNaturalLanguage,
     executeTool,
     tools: TOOLS,
+    listTools: () => TOOL_DOCS,
     isListening: () => S.listening,
   };
 }

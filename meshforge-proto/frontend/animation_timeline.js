@@ -139,25 +139,35 @@ export function createAnimationTimeline(ctx) {
     return clip;
   }
 
-  // Set Current Frame & Scrubber
-  function setFrame(f) {
+  function objectByUUID(uuid) {
+    let found = null;
+    scene.traverse((o) => { if (!found && o.uuid === uuid) found = o; });
+    return found;
+  }
+
+  // Apply stored keys to every keyed object, not only the selection.
+  function evaluateAll(frame) {
+    for (const [uuid, data] of S.keyframeData) {
+      const obj = objectByUUID(uuid);
+      if (obj) interpolateTransform(obj, data, frame);
+    }
+  }
+
+  function keyedNames() {
+    const names = [];
+    for (const [uuid, data] of S.keyframeData) {
+      const has = ['position', 'rotation', 'scale'].some((k) => data[k]?.length);
+      if (!has) continue;
+      const obj = objectByUUID(uuid);
+      if (obj?.name) names.push(obj.name);
+    }
+    return names;
+  }
+
+  // Set Current Frame & Scrubber. opts.apply === false updates the playhead without moving objects.
+  function setFrame(f, opts = {}) {
     S.currentFrame = Math.max(S.startFrame, Math.min(S.endFrame, Math.round(f)));
-    const time = S.currentFrame / S.fps;
-
-    // Apply values at current frame to selected object
-    const obj = editor.sel;
-    if (obj && !S.playing) {
-      const data = getObjectKeyframes(obj);
-      if (data) {
-        interpolateTransform(obj, data, S.currentFrame);
-      }
-    }
-
-    if (S.activeAction) {
-      S.activeAction.time = time;
-      S.mixer.update(0);
-    }
-
+    if (opts.apply !== false) evaluateAll(S.currentFrame);
     updateUI();
   }
 
@@ -218,7 +228,6 @@ export function createAnimationTimeline(ctx) {
         }
       }
       setFrame(S.currentFrame);
-      S.mixer.update(delta);
     }
   }
 
@@ -410,5 +419,35 @@ export function createAnimationTimeline(ctx) {
     bakeAnimationClip,
     renderDopesheet,
     isAutoKey: () => S.autoKey,
+    exportKeys() {
+      const keys = [];
+      for (const [uuid, data] of S.keyframeData) {
+        const obj = objectByUUID(uuid);
+        if (!obj) continue;
+        const used = ['position', 'rotation', 'scale'].some((k) => data[k]?.length);
+        if (!used) continue;
+        keys.push({ name: obj.name, id: obj.userData.sceneId || null, data: { position: data.position, rotation: data.rotation, scale: data.scale } });
+      }
+      return { fps: S.fps, start: S.startFrame, end: S.endFrame, frame: S.currentFrame, keys };
+    },
+    importKeys(pack, find) {
+      S.keyframeData.clear();
+      if (!pack) return;
+      if (pack.fps) S.fps = pack.fps;
+      if (pack.start != null) S.startFrame = pack.start;
+      if (pack.end != null) S.endFrame = pack.end;
+      for (const k of pack.keys || []) {
+        const obj = find?.(k);
+        if (!obj) continue;
+        S.keyframeData.set(obj.uuid, { position: k.data.position || [], rotation: k.data.rotation || [], scale: k.data.scale || [] });
+      }
+      setFrame(pack.frame || 0);
+    },
+    isPlaying: () => S.playing,
+    getFrame: () => S.currentFrame,
+    getStartFrame: () => S.startFrame,
+    getEndFrame: () => S.endFrame,
+    keyedNames,
+    evaluateAll,
   };
 }
